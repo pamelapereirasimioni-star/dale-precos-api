@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { chromium } = require("playwright");
+const { chromium } = require("playwright-core");
 
 const app = express();
 
@@ -11,6 +11,7 @@ app.get("/", (req, res) => {
 });
 
 app.get("/buscar", async (req, res) => {
+
   const produto = req.query.q;
 
   if (!produto) {
@@ -22,7 +23,14 @@ app.get("/buscar", async (req, res) => {
   try {
 
     const browser = await chromium.launch({
-      headless: true
+      headless: true,
+      executablePath: "/usr/bin/chromium-browser",
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--single-process"
+      ]
     });
 
     const page = await browser.newPage();
@@ -30,7 +38,8 @@ app.get("/buscar", async (req, res) => {
     const url = `https://www.google.com/search?q=${encodeURIComponent(produto)}+savegnago`;
 
     await page.goto(url, {
-      waitUntil: "domcontentloaded"
+      waitUntil: "domcontentloaded",
+      timeout: 60000
     });
 
     const titulo = await page.title();
