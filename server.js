@@ -1,6 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const axios = require("axios");
 
 const app = express();
 
@@ -8,35 +7,25 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.json({
-    status: "online",
-    message: "Servidor DALE funcionando"
-  });
+  res.send("Servidor DALE online 🚀");
 });
 
-app.post("/buscar", async (req, res) => {
-  try {
-    const { produto } = req.body;
+app.get("/buscar", async (req, res) => {
+  const produto = req.query.q;
 
-    res.json({
-      produto,
-      mercados: [
-        {
-          nome: "Big Compra",
-          preco: 12.99
-        },
-        {
-          nome: "Savegnago",
-          preco: 13.49
-        }
-      ]
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      erro: "Erro interno"
-    });
-  }
+  res.json({
+    produto,
+    mercados: [
+      {
+        nome: "Savegnago",
+        preco: 12.99
+      },
+      {
+        nome: "Tonin",
+        preco: 13.49
+      }
+    ]
+  });
 });
 
 const PORT = process.env.PORT || 3000;
