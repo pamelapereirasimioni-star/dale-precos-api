@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { chromium } = require("playwright-core");
+const { chromium } = require("playwright");
 
 const app = express();
 
@@ -24,12 +24,10 @@ app.get("/buscar", async (req, res) => {
 
     const browser = await chromium.launch({
       headless: true,
-      executablePath: "/usr/bin/chromium-browser",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--single-process"
+        "--disable-dev-shm-usage"
       ]
     });
 
