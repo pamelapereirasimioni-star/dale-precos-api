@@ -14,9 +14,7 @@ app.get("/buscar", async (req, res) => {
   const produto = req.query.q;
 
   if (!produto) {
-    return res.json({
-      erro: "Produto não informado"
-    });
+    return res.json({ erro: "Produto não informado" });
   }
 
   let browser;
@@ -33,45 +31,29 @@ app.get("/buscar", async (req, res) => {
 
     const page = await browser.newPage();
 
-    const busca = `${produto} savegnago preço`;
-    const url = `https://www.google.com/search?q=${encodeURIComponent(busca)}`;
+    const url = `https://www.savegnago.com.br/${encodeURIComponent(produto)}?_q=${encodeURIComponent(produto)}&map=ft`;
 
     await page.goto(url, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
       timeout: 60000
     });
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
-    const resultados = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll("a"));
-
-      return links
-        .map((link) => ({
-          titulo: link.innerText,
-          url: link.href
-        }))
-        .filter((item) =>
-          item.titulo &&
-          item.titulo.length > 10 &&
-          item.url.includes("http")
-        )
-        .slice(0, 5);
-    });
+    const texto = await page.evaluate(() => document.body.innerText);
 
     await browser.close();
 
     res.json({
       produto,
-      busca,
-      resultados,
-      fonte: "google-real"
+      mercado: "Savegnago",
+      url,
+      textoCapturado: texto.slice(0, 3000),
+      fonte: "savegnago-real"
     });
 
   } catch (erro) {
-    if (browser) {
-      await browser.close();
-    }
+    if (browser) await browser.close();
 
     res.json({
       erro: true,
