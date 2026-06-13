@@ -11,7 +11,6 @@ app.get("/", (req, res) => {
 });
 
 app.get("/buscar", async (req, res) => {
-
   const produto = req.query.q;
 
   if (!produto) {
@@ -20,9 +19,10 @@ app.get("/buscar", async (req, res) => {
     });
   }
 
-  try {
+  let browser;
 
-    const browser = await chromium.launch({
+  try {
+    browser = await chromium.launch({
       headless: true,
       args: [
         "--no-sandbox",
@@ -34,7 +34,6 @@ app.get("/buscar", async (req, res) => {
     const page = await browser.newPage();
 
     const busca = `${produto} savegnago preço`;
-
     const url = `https://www.google.com/search?q=${encodeURIComponent(busca)}`;
 
     await page.goto(url, {
@@ -44,9 +43,21 @@ app.get("/buscar", async (req, res) => {
 
     await page.waitForTimeout(3000);
 
-    const resultados = await page.$$eval("h3", elementos =>
-      elementos.slice(0, 5).map(el => el.innerText)
-    );
+    const resultados = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll("a"));
+
+      return links
+        .map((link) => ({
+          titulo: link.innerText,
+          url: link.href
+        }))
+        .filter((item) =>
+          item.titulo &&
+          item.titulo.length > 10 &&
+          item.url.includes("http")
+        )
+        .slice(0, 5);
+    });
 
     await browser.close();
 
@@ -58,14 +69,15 @@ app.get("/buscar", async (req, res) => {
     });
 
   } catch (erro) {
+    if (browser) {
+      await browser.close();
+    }
 
     res.json({
       erro: true,
       mensagem: erro.message
     });
-
   }
-
 });
 
 const PORT = process.env.PORT || 3000;
