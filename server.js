@@ -33,21 +33,27 @@ app.get("/buscar", async (req, res) => {
 
     const page = await browser.newPage();
 
-    const url = `https://www.google.com/search?q=${encodeURIComponent(produto)}+savegnago`;
+    const busca = `${produto} savegnago preço`;
+
+    const url = `https://www.google.com/search?q=${encodeURIComponent(busca)}`;
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 60000
     });
 
-    const titulo = await page.title();
+    await page.waitForTimeout(3000);
+
+    const resultados = await page.$$eval("h3", elementos =>
+      elementos.slice(0, 5).map(el => el.innerText)
+    );
 
     await browser.close();
 
     res.json({
       produto,
-      buscaRealizada: true,
-      tituloGoogle: titulo,
+      busca,
+      resultados,
       fonte: "google-real"
     });
 
