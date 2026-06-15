@@ -11,7 +11,6 @@ app.get("/", (req, res) => {
 });
 
 app.get("/buscar", async (req, res) => {
-
   const produto = req.query.q;
 
   if (!produto) {
@@ -23,7 +22,6 @@ app.get("/buscar", async (req, res) => {
   let browser;
 
   try {
-
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -35,8 +33,7 @@ app.get("/buscar", async (req, res) => {
 
     const page = await browser.newPage();
 
-    const url =
-      `https://www.savegnago.com.br/${encodeURIComponent(produto)}?_q=${encodeURIComponent(produto)}&map=ft`;
+    const url = `https://www.savegnago.com.br/${encodeURIComponent(produto)}?_q=${encodeURIComponent(produto)}&map=ft`;
 
     await page.goto(url, {
       waitUntil: "networkidle",
@@ -46,42 +43,52 @@ app.get("/buscar", async (req, res) => {
     await page.waitForTimeout(5000);
 
     const produtos = await page.evaluate(() => {
-
-      const texto = document.body.innerText;
-
-      const linhas = texto.split("\n");
-
-      const resultados = [];
+      const lista = [];
+      const textoPagina = document.body.innerText || "";
+      const linhas = textoPagina
+        .split("\n")
+        .map((linha) => linha.trim())
+        .filter(Boolean);
 
       for (let i = 0; i < linhas.length; i++) {
-
         const linha = linhas[i];
 
-        if (
-          linha.includes("Feijão") ||
-          linha.includes("feijão")
-        ) {
+        const pareceProduto =
+          linha.length > 5 &&
+          !linha.includes("R$") &&
+          !linha.toLowerCase().includes("comprar") &&
+          !linha.toLowerCase().includes("categorias") &&
+          !linha.toLowerCase().includes("filtros") &&
+          !linha.toLowerCase().includes("relevância");
 
-          for (let j = i; j < i + 5; j++) {
+        if (!pareceProduto) continue;
 
-            if (linhas[j] && linhas[j].includes("R$")) {
+        for (let j = i + 1; j <= i + 8 && j < linhas.length; j++) {
+          const precoMatch = linhas[j].match(/R\$\s?\d{1,3}(?:\.\d{3})*,\d{2}/);
 
-              resultados.push({
-                nome: linha.trim(),
-                preco: linhas[j].trim()
-              });
-
-              break;
-            }
-
+          if (precoMatch) {
+            lista.push({
+              nome: linha,
+              preco: precoMatch[0]
+            });
+            break;
           }
-
         }
-
       }
 
-      return resultados.slice(0, 10);
+      const semDuplicados = [];
+      const vistos = new Set();
 
+      for (const item of lista) {
+        const chave = `${item.nome}-${item.preco}`;
+
+        if (!vistos.has(chave)) {
+          vistos.add(chave);
+          semDuplicados.push(item);
+        }
+      }
+
+      return semDuplicados.slice(0, 15);
     });
 
     await browser.close();
@@ -95,7 +102,6 @@ app.get("/buscar", async (req, res) => {
     });
 
   } catch (erro) {
-
     if (browser) {
       await browser.close();
     }
@@ -104,9 +110,7 @@ app.get("/buscar", async (req, res) => {
       erro: true,
       mensagem: erro.message
     });
-
   }
-
 });
 
 const PORT = process.env.PORT || 3000;
