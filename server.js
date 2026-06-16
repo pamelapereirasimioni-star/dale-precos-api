@@ -70,7 +70,9 @@ app.get("/buscar", async (req, res) => {
         "ofertas",
         "frete grátis",
         "cupom",
-        "sem sugestões"
+        "sem sugestões",
+        "tipo de produto",
+        "patrocinado"
       ];
 
       for (let i = 0; i < linhas.length; i++) {
