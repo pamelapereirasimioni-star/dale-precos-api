@@ -36,34 +36,55 @@ app.get("/buscar", async (req, res) => {
     const url = `https://www.savegnago.com.br/${encodeURIComponent(produto)}?_q=${encodeURIComponent(produto)}&map=ft`;
 
     await page.goto(url, {
-      waitUntil: "networkidle",
-      timeout: 60000
+      waitUntil: "domcontentloaded",
+      timeout: 90000
     });
 
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(8000);
 
     const produtos = await page.evaluate(() => {
       const lista = [];
       const textoPagina = document.body.innerText || "";
+
       const linhas = textoPagina
         .split("\n")
         .map((linha) => linha.trim())
         .filter(Boolean);
 
+      const bloqueados = [
+        "buscar",
+        "volume",
+        "faixas de preço",
+        "nosso cartão",
+        "relevância",
+        "categorias",
+        "comprar",
+        "filtros",
+        "promoções",
+        "lista de",
+        "retire em",
+        "minha conta",
+        "departamento",
+        "marca",
+        "preço",
+        "ofertas",
+        "frete grátis",
+        "cupom",
+        "sem sugestões"
+      ];
+
       for (let i = 0; i < linhas.length; i++) {
         const linha = linhas[i];
+        const textoLower = linha.toLowerCase();
 
         const pareceProduto =
-          linha.length > 5 &&
+          linha.length > 10 &&
           !linha.includes("R$") &&
-          !linha.toLowerCase().includes("comprar") &&
-          !linha.toLowerCase().includes("categorias") &&
-          !linha.toLowerCase().includes("filtros") &&
-          !linha.toLowerCase().includes("relevância");
+          !bloqueados.some((p) => textoLower.includes(p));
 
         if (!pareceProduto) continue;
 
-        for (let j = i + 1; j <= i + 8 && j < linhas.length; j++) {
+        for (let j = i + 1; j <= i + 10 && j < linhas.length; j++) {
           const precoMatch = linhas[j].match(/R\$\s?\d{1,3}(?:\.\d{3})*,\d{2}/);
 
           if (precoMatch) {
