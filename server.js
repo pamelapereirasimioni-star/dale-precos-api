@@ -5,30 +5,31 @@ const { chromium } = require("playwright");
 const app = express();
 
 app.use(cors());
+app.use(express.json());
 
 app.get("/", (req, res) => {
   res.send("Servidor DALE online 🚀");
 });
 
-app.get("/buscar", async (req, res) => {
-  const produto = req.query.q;
+function converterPreco(precoTexto) {
+  if (!precoTexto) return null;
 
-  if (!produto) {
-    return res.json({
-      erro: "Produto não informado"
-    });
-  }
+  return Number(
+    precoTexto
+      .replace("R$", "")
+      .replace(".", "")
+      .replace(",", ".")
+      .trim()
+  );
+}
 
+async function buscarSavegnago(produto) {
   let browser;
 
   try {
     browser = await chromium.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
-      ]
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
     const page = await browser.newPage();
@@ -92,7 +93,8 @@ app.get("/buscar", async (req, res) => {
           if (precoMatch) {
             lista.push({
               nome: linha,
-              preco: precoMatch[0]
+              precoTexto: precoMatch[0],
+              preco: converterPreco(precoMatch[0])
             });
             break;
           }
@@ -103,7 +105,7 @@ app.get("/buscar", async (req, res) => {
       const vistos = new Set();
 
       for (const item of lista) {
-        const chave = `${item.nome}-${item.preco}`;
+        const chave = `${item.nome}-${item.precoTexto}`;
 
         if (!vistos.has(chave)) {
           vistos.add(chave);
@@ -111,29 +113,69 @@ app.get("/buscar", async (req, res) => {
         }
       }
 
-      return semDuplicados.slice(0, 15);
+      return semDuplicados.slice(0, 10);
     });
 
     await browser.close();
 
-    res.json({
-      produto,
-      mercado: "Savegnago",
-      total: produtos.length,
-      produtos,
-      fonte: "savegnago-real"
-    });
+    return produtos;
 
   } catch (erro) {
-    if (browser) {
-      await browser.close();
-    }
+    if (browser) await browser.close();
+    return [];
+  }
+}
 
-    res.json({
-      erro: true,
-      mensagem: erro.message
+app.get("/buscar", async (req, res) => {
+  const produto = req.query.q;
+
+  if (!produto) {
+    return res.json({ erro: "Produto não informado" });
+  }
+
+  const produtos = await buscarSavegnago(produto);
+
+  res.json({
+    produto,
+    mercado: "Savegnago",
+    total: produtos.length,
+    produtos,
+    fonte: "savegnago-real"
+  });
+});
+
+app.post("/prices/batch", async (req, res) => {
+  const { supermarketId, products, eanList } = req.body;
+
+  const listaProdutos =
+    products ||
+    (eanList || []).map((ean) => ({
+      ean,
+      nome: ean
+    }));
+
+  const resultados = [];
+
+  for (const produto of listaProdutos) {
+    const termoBusca = produto.nome || produto.name || produto.ean;
+
+    const encontrados = await buscarSavegnago(termoBusca);
+
+    const primeiro = encontrados[0];
+
+    resultados.push({
+      ean: produto.ean,
+      supermarketId: supermarketId || "savegnago",
+      price: primeiro ? primeiro.preco : null,
+      available: !!primeiro,
+      promo: false,
+      lastUpdate: new Date().toISOString(),
+      source: "savegnago",
+      productName: primeiro ? primeiro.nome : termoBusca
     });
   }
+
+  res.json(resultados);
 });
 
 const PORT = process.env.PORT || 3000;
