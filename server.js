@@ -29,10 +29,14 @@ async function buscarSavegnago(produto) {
   try {
     browser = await chromium.launch({
       headless: true,
+      timeout: 30000,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--single-process",
+        "--disable-extensions"
       ]
     });
 
@@ -42,11 +46,11 @@ async function buscarSavegnago(produto) {
     const url = `https://www.savegnago.com.br/${encodeURIComponent(termo)}?_q=${encodeURIComponent(termo)}&map=ft`;
 
     await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000
+      waitUntil: "load",
+      timeout: 30000
     });
 
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(2000);
 
     const produtos = await page.evaluate(() => {
       const textoPagina = document.body.innerText || "";
