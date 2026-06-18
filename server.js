@@ -29,12 +29,17 @@ async function buscarSavegnago(produto) {
   try {
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage"
+      ]
     });
 
     const page = await browser.newPage();
 
-    const url = `https://www.savegnago.com.br/${encodeURIComponent(produto)}?_q=${encodeURIComponent(produto)}&map=ft`;
+    const termo = String(produto || "").trim();
+    const url = `https://www.savegnago.com.br/${encodeURIComponent(termo)}?_q=${encodeURIComponent(termo)}&map=ft`;
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
@@ -44,7 +49,6 @@ async function buscarSavegnago(produto) {
     await page.waitForTimeout(8000);
 
     const produtos = await page.evaluate(() => {
-      const lista = [];
       const textoPagina = document.body.innerText || "";
 
       const linhas = textoPagina
@@ -73,28 +77,29 @@ async function buscarSavegnago(produto) {
         "cupom",
         "sem sugestões",
         "tipo de produto",
-        "patrocinado"
+        "patrocinado",
+        "sacola",
+        "login",
+        "cadastro"
       ];
+
+      const lista = [];
 
       for (let i = 0; i < linhas.length; i++) {
         const linha = linhas[i];
         const textoLower = linha.toLowerCase();
 
-        const pareceProduto =
-          linha.length > 10 &&
-          !linha.includes("R$") &&
-          !bloqueados.some((p) => textoLower.includes(p));
+        if (linha.includes("R$")) continue;
+        if (linha.length < 8) continue;
+        if (bloqueados.some((p) => textoLower.includes(p))) continue;
 
-        if (!pareceProduto) continue;
-
-        for (let j = i + 1; j <= i + 10 && j < linhas.length; j++) {
+        for (let j = i + 1; j <= i + 8 && j < linhas.length; j++) {
           const precoMatch = linhas[j].match(/R\$\s?\d{1,3}(?:\.\d{3})*,\d{2}/);
 
           if (precoMatch) {
             lista.push({
               nome: linha,
-              precoTexto: precoMatch[0],
-              preco: converterPreco(precoMatch[0])
+              precoTexto: precoMatch[0]
             });
             break;
           }
@@ -113,15 +118,20 @@ async function buscarSavegnago(produto) {
         }
       }
 
-      return semDuplicados.slice(0, 10);
+      return semDuplicados.slice(0, 15);
     });
 
     await browser.close();
 
-    return produtos;
+    return produtos.map((item) => ({
+      nome: item.nome,
+      precoTexto: item.precoTexto,
+      preco: converterPreco(item.precoTexto)
+    }));
 
   } catch (erro) {
     if (browser) await browser.close();
+    console.error("Erro Savegnago:", erro.message);
     return [];
   }
 }
@@ -160,7 +170,6 @@ app.post("/prices/batch", async (req, res) => {
     const termoBusca = produto.nome || produto.name || produto.ean;
 
     const encontrados = await buscarSavegnago(termoBusca);
-
     const primeiro = encontrados[0];
 
     resultados.push({
