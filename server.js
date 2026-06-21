@@ -159,36 +159,21 @@ app.get("/buscar", async (req, res) => {
 });
 
 app.post("/prices/batch", async (req, res) => {
-  const { supermarketId, products, eanList } = req.body;
+  console.log("POST /prices/batch RECEBIDO");
+  console.log("Body recebido:", req.body);
 
-  const listaProdutos =
-    products ||
-    (eanList || []).map((ean) => ({
-      ean,
-      nome: ean
-    }));
-
-  const resultados = [];
-
-  for (const produto of listaProdutos) {
-    const termoBusca = produto.nome || produto.name || produto.ean;
-
-    const encontrados = await buscarSavegnago(termoBusca);
-    const primeiro = encontrados[0];
-
-    resultados.push({
-      ean: produto.ean,
-      supermarketId: supermarketId || "savegnago",
-      price: primeiro ? primeiro.preco : null,
-      available: !!primeiro,
+  return res.json([
+    {
+      ean: "7893500012672",
+      supermarketId: "savegnago",
+      price: 9.99,
+      available: true,
       promo: false,
       lastUpdate: new Date().toISOString(),
-      source: "savegnago",
-      productName: primeiro ? primeiro.nome : termoBusca
-    });
-  }
-
-  res.json(resultados);
+      source: "teste",
+      productName: "Produto teste Savegnago"
+    }
+  ]);
 });
 
 const PORT = process.env.PORT || 3000;
