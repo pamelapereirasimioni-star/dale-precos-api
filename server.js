@@ -162,16 +162,18 @@ app.post("/prices/batch", async (req, res) => {
   console.log("POST /prices/batch RECEBIDO");
   console.log("Body recebido:", req.body);
 
+  const produto = req.body.products?.[0];
+
   return res.json([
     {
-      ean: "7893500012672",
+      ean: produto?.ean,
       supermarketId: "savegnago",
       price: 9.99,
       available: true,
       promo: false,
       lastUpdate: new Date().toISOString(),
       source: "teste",
-      productName: "Produto teste Savegnago"
+      productName: produto?.nome || "Produto teste Savegnago"
     }
   ]);
 });
