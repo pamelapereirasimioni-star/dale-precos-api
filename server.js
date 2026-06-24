@@ -164,16 +164,24 @@ app.post("/prices/batch", async (req, res) => {
 
   const produto = req.body.products?.[0];
 
+  if (!produto) {
+    return res.json([]);
+  }
+
+  const termoBusca = produto.nome || produto.name || produto.ean;
+  const encontrados = await buscarSavegnago(termoBusca);
+  const primeiro = encontrados[0];
+
   return res.json([
     {
-      ean: produto?.ean,
+      ean: produto.ean,
       supermarketId: "savegnago",
-      price: 9.99,
-      available: true,
+      price: primeiro ? primeiro.preco : null,
+      available: !!primeiro,
       promo: false,
       lastUpdate: new Date().toISOString(),
-      source: "teste",
-      productName: produto?.nome || "Produto teste Savegnago"
+      source: "savegnago-real",
+      productName: primeiro ? primeiro.nome : termoBusca
     }
   ]);
 });
