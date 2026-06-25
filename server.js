@@ -1,6 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const { chromium } = require("playwright");
 
 const app = express();
 
@@ -12,182 +11,103 @@ app.get("/", (req, res) => {
   res.send("Servidor DALE online 🚀");
 });
 
-function converterPreco(precoTexto) {
-  if (!precoTexto) return null;
-
-  return Number(
-    precoTexto
-      .replace("R$", "")
-      .replace(".", "")
-      .replace(",", ".")
-      .trim()
-  );
-}
-
 function normalizarTexto(texto) {
   return String(texto || "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function calcularPontuacao(produtoBuscado, produtoEncontrado) {
-  const buscado = normalizarTexto(produtoBuscado);
-  const encontrado = normalizarTexto(produtoEncontrado.nome);
+function calcularPontuacao(termoBusca, produto) {
+  const buscado = normalizarTexto(termoBusca);
+  const nome = normalizarTexto(produto.productName || produto.productTitle || "");
 
   let pontos = 0;
 
   const palavras = buscado.split(" ").filter((p) => p.length > 2);
 
   for (const palavra of palavras) {
-    if (encontrado.includes(palavra)) pontos += 2;
+    if (nome.includes(palavra)) pontos += 3;
   }
 
   const pesoBuscado = buscado.match(/\d+\s?(kg|g)/);
-  const pesoEncontrado = encontrado.match(/\d+\s?(kg|g)/);
+  const pesoProduto = nome.match(/\d+\s?(kg|g)/);
 
-  if (pesoBuscado && pesoEncontrado) {
+  if (pesoBuscado && pesoProduto) {
     const pesoB = pesoBuscado[0].replace(/\s/g, "");
-    const pesoE = pesoEncontrado[0].replace(/\s/g, "");
+    const pesoP = pesoProduto[0].replace(/\s/g, "");
 
-    if (pesoB === pesoE) pontos += 20;
-    else pontos -= 20;
+    if (pesoB === pesoP) pontos += 30;
+    else pontos -= 30;
   }
-
-  if (buscado.includes("parboilizado") && encontrado.includes("parboilizado")) pontos += 8;
-  if (buscado.includes("tio joao") && encontrado.includes("tio joao")) pontos += 8;
-  if (buscado.includes("tipo 1") && encontrado.includes("tipo 1")) pontos += 4;
 
   return pontos;
 }
 
-function escolherMelhorProduto(termoBusca, encontrados) {
-  if (!encontrados || encontrados.length === 0) return null;
+function extrairMelhorOferta(produto) {
+  const item = produto.items?.[0];
+  const seller = item?.sellers?.find((s) => s.sellerDefault) || item?.sellers?.[0];
+  const oferta = seller?.commertialOffer;
 
-  return encontrados
-    .map((item) => ({
-      ...item,
-      pontuacao: calcularPontuacao(termoBusca, item)
-    }))
-    .sort((a, b) => b.pontuacao - a.pontuacao)[0];
+  if (!item || !seller || !oferta) return null;
+
+  return {
+    productName: produto.productName,
+    productTitle: produto.productTitle,
+    ean: item.ean,
+    itemId: item.itemId,
+    sellerId: seller.sellerId,
+    price: oferta.Price || null,
+    listPrice: oferta.ListPrice || null,
+    available: oferta.IsAvailable === true,
+    image: item.images?.[0]?.imageUrl || null,
+    url: produto.link || null
+  };
 }
 
-async function buscarSavegnago(produto) {
-  let browser;
+function escolherMelhorProduto(termoBusca, produtos) {
+  if (!Array.isArray(produtos) || produtos.length === 0) return null;
 
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      timeout: 30000,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--single-process",
-        "--disable-extensions"
-      ]
-    });
+  const ordenados = produtos
+    .map((produto) => ({
+      produto,
+      pontuacao: calcularPontuacao(termoBusca, produto)
+    }))
+    .sort((a, b) => b.pontuacao - a.pontuacao);
 
-    const page = await browser.newPage();
+  return ordenados[0].produto;
+}
 
-    const termo = String(produto || "").trim();
-    const url = `https://www.savegnago.com.br/${encodeURIComponent(termo)}?_q=${encodeURIComponent(termo)}&map=ft`;
+async function buscarSavegnagoVTEX(termoBusca) {
+  const termo = String(termoBusca || "").trim();
 
-    await page.goto(url, {
-      waitUntil: "load",
-      timeout: 30000
-    });
+  if (!termo) return null;
 
-    await page.waitForTimeout(2000);
+  const url = `https://www.savegnago.com.br/api/catalog_system/pub/products/search/${encodeURIComponent(termo)}?_from=0&_to=20`;
 
-    const produtos = await page.evaluate(() => {
-      const textoPagina = document.body.innerText || "";
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": "DALE-Precos/1.0"
+    }
+  });
 
-      const linhas = textoPagina
-        .split("\n")
-        .map((linha) => linha.trim())
-        .filter(Boolean);
-
-      const bloqueados = [
-        "buscar",
-        "volume",
-        "faixas de preço",
-        "nosso cartão",
-        "relevância",
-        "categorias",
-        "comprar",
-        "filtros",
-        "promoções",
-        "lista de",
-        "retire em",
-        "minha conta",
-        "departamento",
-        "marca",
-        "preço",
-        "ofertas",
-        "frete grátis",
-        "cupom",
-        "sem sugestões",
-        "tipo de produto",
-        "patrocinado",
-        "sacola",
-        "login",
-        "cadastro"
-      ];
-
-      const lista = [];
-
-      for (let i = 0; i < linhas.length; i++) {
-        const linha = linhas[i];
-        const textoLower = linha.toLowerCase();
-
-        if (linha.includes("R$")) continue;
-        if (linha.length < 8) continue;
-        if (bloqueados.some((p) => textoLower.includes(p))) continue;
-
-        for (let j = i + 1; j <= i + 8 && j < linhas.length; j++) {
-          const precoMatch = linhas[j].match(/R\$\s?\d{1,3}(?:\.\d{3})*,\d{2}/);
-
-          if (precoMatch) {
-            lista.push({
-              nome: linha,
-              precoTexto: precoMatch[0]
-            });
-            break;
-          }
-        }
-      }
-
-      const semDuplicados = [];
-      const vistos = new Set();
-
-      for (const item of lista) {
-        const chave = `${item.nome}-${item.precoTexto}`;
-
-        if (!vistos.has(chave)) {
-          vistos.add(chave);
-          semDuplicados.push(item);
-        }
-      }
-
-      return semDuplicados.slice(0, 15);
-    });
-
-    await browser.close();
-
-    return produtos.map((item) => ({
-      nome: item.nome,
-      precoTexto: item.precoTexto,
-      preco: converterPreco(item.precoTexto)
-    }));
-  } catch (erro) {
-    if (browser) await browser.close();
-    console.error("Erro Savegnago:", erro.message);
-    return [];
+  if (!response.ok) {
+    console.log("Erro VTEX:", response.status);
+    return null;
   }
+
+  const produtos = await response.json();
+
+  const melhorProduto = escolherMelhorProduto(termo, produtos);
+
+  if (!melhorProduto) return null;
+
+  return extrairMelhorOferta(melhorProduto);
 }
 
 app.get("/buscar", async (req, res) => {
@@ -197,46 +117,76 @@ app.get("/buscar", async (req, res) => {
     return res.json({ erro: "Produto não informado" });
   }
 
-  const produtos = await buscarSavegnago(produto);
+  try {
+    const resultado = await buscarSavegnagoVTEX(produto);
 
-  res.json({
-    produto,
-    mercado: "Savegnago",
-    total: produtos.length,
-    produtos,
-    fonte: "savegnago-real"
-  });
+    return res.json({
+      produto,
+      mercado: "Savegnago",
+      total: resultado ? 1 : 0,
+      produtos: resultado ? [resultado] : [],
+      fonte: "savegnago-vtex"
+    });
+  } catch (erro) {
+    console.error("Erro /buscar:", erro.message);
+
+    return res.json({
+      erro: true,
+      mensagem: erro.message
+    });
+  }
 });
 
 app.post("/prices/batch", async (req, res) => {
   console.log("POST /prices/batch RECEBIDO");
   console.log("Body recebido:", req.body);
 
-  const produto = req.body.products?.[0];
+  try {
+    const produto = req.body.products?.[0];
 
-  if (!produto || (!produto.nome && !produto.name && !produto.ean)) {
-    return res.json([]);
-  }
-
-  const termoBusca = produto.nome || produto.name || produto.ean;
-  const encontrados = await buscarSavegnago(termoBusca);
-  const melhorProduto = escolherMelhorProduto(termoBusca, encontrados);
-
-  console.log("Termo buscado:", termoBusca);
-  console.log("Melhor produto:", melhorProduto);
-
-  return res.json([
-    {
-      ean: produto.ean,
-      supermarketId: "savegnago",
-      price: melhorProduto ? melhorProduto.preco : null,
-      available: !!melhorProduto,
-      promo: false,
-      lastUpdate: new Date().toISOString(),
-      source: "savegnago-real",
-      productName: melhorProduto ? melhorProduto.nome : termoBusca
+    if (!produto || (!produto.nome && !produto.name && !produto.ean)) {
+      return res.json([]);
     }
-  ]);
+
+    const termoBusca = produto.nome || produto.name || produto.ean;
+
+    const resultado = await buscarSavegnagoVTEX(termoBusca);
+
+    console.log("Termo buscado:", termoBusca);
+    console.log("Resultado VTEX:", resultado);
+
+    return res.json([
+      {
+        ean: produto.ean,
+        supermarketId: "savegnago",
+        price: resultado?.price || null,
+        available: resultado?.available || false,
+        promo: false,
+        lastUpdate: new Date().toISOString(),
+        source: "savegnago-vtex",
+        productName: resultado?.productName || termoBusca,
+        matchedEan: resultado?.ean || null,
+        itemId: resultado?.itemId || null,
+        image: resultado?.image || null,
+        url: resultado?.url || null
+      }
+    ]);
+  } catch (erro) {
+    console.error("Erro /prices/batch:", erro.message);
+
+    return res.json([
+      {
+        ean: req.body.products?.[0]?.ean || null,
+        supermarketId: "savegnago",
+        price: null,
+        available: false,
+        promo: false,
+        lastUpdate: new Date().toISOString(),
+        source: "savegnago-vtex",
+        productName: req.body.products?.[0]?.nome || null
+      }
+    ]);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
