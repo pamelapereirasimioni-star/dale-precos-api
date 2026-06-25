@@ -5,6 +5,7 @@ const { chromium } = require("playwright");
 const app = express();
 
 app.use(cors());
+app.options("*", cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -21,6 +22,56 @@ function converterPreco(precoTexto) {
       .replace(",", ".")
       .trim()
   );
+}
+
+function normalizarTexto(texto) {
+  return String(texto || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function calcularPontuacao(produtoBuscado, produtoEncontrado) {
+  const buscado = normalizarTexto(produtoBuscado);
+  const encontrado = normalizarTexto(produtoEncontrado.nome);
+
+  let pontos = 0;
+
+  const palavras = buscado.split(" ").filter((p) => p.length > 2);
+
+  for (const palavra of palavras) {
+    if (encontrado.includes(palavra)) pontos += 2;
+  }
+
+  const pesoBuscado = buscado.match(/\d+\s?(kg|g)/);
+  const pesoEncontrado = encontrado.match(/\d+\s?(kg|g)/);
+
+  if (pesoBuscado && pesoEncontrado) {
+    const pesoB = pesoBuscado[0].replace(/\s/g, "");
+    const pesoE = pesoEncontrado[0].replace(/\s/g, "");
+
+    if (pesoB === pesoE) pontos += 20;
+    else pontos -= 20;
+  }
+
+  if (buscado.includes("parboilizado") && encontrado.includes("parboilizado")) pontos += 8;
+  if (buscado.includes("tio joao") && encontrado.includes("tio joao")) pontos += 8;
+  if (buscado.includes("tipo 1") && encontrado.includes("tipo 1")) pontos += 4;
+
+  return pontos;
+}
+
+function escolherMelhorProduto(termoBusca, encontrados) {
+  if (!encontrados || encontrados.length === 0) return null;
+
+  return encontrados
+    .map((item) => ({
+      ...item,
+      pontuacao: calcularPontuacao(termoBusca, item)
+    }))
+    .sort((a, b) => b.pontuacao - a.pontuacao)[0];
 }
 
 async function buscarSavegnago(produto) {
@@ -132,7 +183,6 @@ async function buscarSavegnago(produto) {
       precoTexto: item.precoTexto,
       preco: converterPreco(item.precoTexto)
     }));
-
   } catch (erro) {
     if (browser) await browser.close();
     console.error("Erro Savegnago:", erro.message);
@@ -164,24 +214,27 @@ app.post("/prices/batch", async (req, res) => {
 
   const produto = req.body.products?.[0];
 
-  if (!produto) {
+  if (!produto || (!produto.nome && !produto.name && !produto.ean)) {
     return res.json([]);
   }
 
   const termoBusca = produto.nome || produto.name || produto.ean;
   const encontrados = await buscarSavegnago(termoBusca);
-  const primeiro = encontrados[0];
+  const melhorProduto = escolherMelhorProduto(termoBusca, encontrados);
+
+  console.log("Termo buscado:", termoBusca);
+  console.log("Melhor produto:", melhorProduto);
 
   return res.json([
     {
       ean: produto.ean,
       supermarketId: "savegnago",
-      price: primeiro ? primeiro.preco : null,
-      available: !!primeiro,
+      price: melhorProduto ? melhorProduto.preco : null,
+      available: !!melhorProduto,
       promo: false,
       lastUpdate: new Date().toISOString(),
       source: "savegnago-real",
-      productName: primeiro ? primeiro.nome : termoBusca
+      productName: melhorProduto ? melhorProduto.nome : termoBusca
     }
   ]);
 });
