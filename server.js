@@ -21,27 +21,48 @@ function normalizarTexto(texto) {
     .trim();
 }
 
-function calcularPontuacao(termoBusca, produto) {
+function extrairPeso(texto) {
+  const normalizado = normalizarTexto(texto);
+  const match = normalizado.match(/(\d+(?:[.,]\d+)?)\s?(kg|g|ml|l)/);
+
+  if (!match) return null;
+
+  return `${match[1].replace(",", ".")}${match[2]}`;
+}
+
+function calcularPontuacao(termoBusca, produto, eanBuscado) {
   const buscado = normalizarTexto(termoBusca);
   const nome = normalizarTexto(produto.productName || produto.productTitle || "");
 
   let pontos = 0;
 
+  const item = produto.items?.[0];
+
+  if (eanBuscado && item?.ean && String(item.ean) === String(eanBuscado)) {
+    pontos += 1000;
+  }
+
   const palavras = buscado.split(" ").filter((p) => p.length > 2);
 
   for (const palavra of palavras) {
-    if (nome.includes(palavra)) pontos += 3;
+    if (nome.includes(palavra)) pontos += 5;
+    else pontos -= 2;
   }
 
-  const pesoBuscado = buscado.match(/\d+\s?(kg|g)/);
-  const pesoProduto = nome.match(/\d+\s?(kg|g)/);
+  const pesoBuscado = extrairPeso(buscado);
+  const pesoProduto = extrairPeso(nome);
 
   if (pesoBuscado && pesoProduto) {
-    const pesoB = pesoBuscado[0].replace(/\s/g, "");
-    const pesoP = pesoProduto[0].replace(/\s/g, "");
+    if (pesoBuscado === pesoProduto) pontos += 80;
+    else pontos -= 100;
+  }
 
-    if (pesoB === pesoP) pontos += 30;
-    else pontos -= 30;
+  const termosProibidos = ["pronto", "branco", "preto", "500g", "380g"];
+
+  for (const termo of termosProibidos) {
+    if (!buscado.includes(termo) && nome.includes(termo)) {
+      pontos -= 40;
+    }
   }
 
   return pontos;
@@ -68,42 +89,83 @@ function extrairMelhorOferta(produto) {
   };
 }
 
-function escolherMelhorProduto(termoBusca, produtos) {
+function escolherMelhorProduto(termoBusca, produtos, eanBuscado) {
   if (!Array.isArray(produtos) || produtos.length === 0) return null;
 
   const ordenados = produtos
     .map((produto) => ({
       produto,
-      pontuacao: calcularPontuacao(termoBusca, produto)
+      pontuacao: calcularPontuacao(termoBusca, produto, eanBuscado)
     }))
     .sort((a, b) => b.pontuacao - a.pontuacao);
+
+  console.log(
+    "Ranking:",
+    ordenados.slice(0, 5).map((x) => ({
+      nome: x.produto.productName,
+      ean: x.produto.items?.[0]?.ean,
+      pontuacao: x.pontuacao
+    }))
+  );
 
   return ordenados[0].produto;
 }
 
-async function buscarSavegnagoVTEX(termoBusca) {
-  const termo = String(termoBusca || "").trim();
-
-  if (!termo) return null;
-
-  const url = `https://www.savegnago.com.br/api/catalog_system/pub/products/search/${encodeURIComponent(termo)}?_from=0&_to=20`;
-
+async function consultarVTEX(url) {
   const response = await fetch(url, {
     method: "GET",
     headers: {
-      "Accept": "application/json",
+      Accept: "application/json",
       "User-Agent": "DALE-Precos/1.0"
     }
   });
 
   if (!response.ok) {
-    console.log("Erro VTEX:", response.status);
-    return null;
+    console.log("Erro VTEX:", response.status, url);
+    return [];
   }
 
-  const produtos = await response.json();
+  return response.json();
+}
 
-  const melhorProduto = escolherMelhorProduto(termo, produtos);
+async function buscarPorEAN(ean) {
+  if (!ean) return [];
+
+  const url = `https://www.savegnago.com.br/api/catalog_system/pub/products/search?fq=alternateIds_Ean:${encodeURIComponent(ean)}`;
+
+  return consultarVTEX(url);
+}
+
+async function buscarPorNome(termoBusca) {
+  const termo = String(termoBusca || "").trim();
+
+  if (!termo) return [];
+
+  const url = `https://www.savegnago.com.br/api/catalog_system/pub/products/search/${encodeURIComponent(termo)}?_from=0&_to=30`;
+
+  return consultarVTEX(url);
+}
+
+async function buscarSavegnagoVTEX(termoBusca, eanBuscado) {
+  let produtos = [];
+
+  if (eanBuscado) {
+    produtos = await buscarPorEAN(eanBuscado);
+
+    if (Array.isArray(produtos) && produtos.length > 0) {
+      const produtoExato = produtos.find(
+        (p) => p.items?.some((item) => String(item.ean) === String(eanBuscado))
+      );
+
+      if (produtoExato) {
+        return extrairMelhorOferta(produtoExato);
+      }
+    }
+  }
+
+  produtos = await buscarPorNome(termoBusca);
+
+  const melhorProduto = escolherMelhorProduto(termoBusca, produtos, eanBuscado);
 
   if (!melhorProduto) return null;
 
@@ -112,16 +174,17 @@ async function buscarSavegnagoVTEX(termoBusca) {
 
 app.get("/buscar", async (req, res) => {
   const produto = req.query.q;
+  const ean = req.query.ean;
 
-  if (!produto) {
-    return res.json({ erro: "Produto não informado" });
+  if (!produto && !ean) {
+    return res.json({ erro: "Produto ou EAN não informado" });
   }
 
   try {
-    const resultado = await buscarSavegnagoVTEX(produto);
+    const resultado = await buscarSavegnagoVTEX(produto || ean, ean);
 
     return res.json({
-      produto,
+      produto: produto || ean,
       mercado: "Savegnago",
       total: resultado ? 1 : 0,
       produtos: resultado ? [resultado] : [],
@@ -149,10 +212,12 @@ app.post("/prices/batch", async (req, res) => {
     }
 
     const termoBusca = produto.nome || produto.name || produto.ean;
+    const eanBuscado = produto.ean;
 
-    const resultado = await buscarSavegnagoVTEX(termoBusca);
+    const resultado = await buscarSavegnagoVTEX(termoBusca, eanBuscado);
 
     console.log("Termo buscado:", termoBusca);
+    console.log("EAN buscado:", eanBuscado);
     console.log("Resultado VTEX:", resultado);
 
     return res.json([
