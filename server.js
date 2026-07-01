@@ -29,6 +29,8 @@ function limparNomeBusca(nome) {
     .replace(/\bcaixa\b/g, "")
     .replace(/\bpet\b/g, "")
     .replace(/\bembalagem\b/g, "")
+    .replace(/\buht\b/g, "")
+    .replace(/\slonga\s+vida\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -43,11 +45,24 @@ function extrairPeso(texto) {
 function temIncompatibilidade(buscado, encontrado) {
   const pares = [
     ["integral", "semi desnatado"],
+    ["integral", "semidesnatado"],
     ["integral", "desnatado"],
     ["integral", "zero lactose"],
+    ["integral", "s lactose"],
+    ["integral", "lactose"],
     ["integral", "protein"],
+    ["integral", "a2"],
+
+    ["semi desnatado", "integral"],
+    ["semidesnatado", "integral"],
+    ["desnatado", "integral"],
+    ["zero lactose", "integral"],
+    ["protein", "integral"],
+    ["a2", "integral"],
+
     ["girassol", "soja"],
     ["soja", "girassol"],
+
     ["carioca", "preto"],
     ["preto", "carioca"],
     ["carioca", "branco"],
@@ -65,6 +80,10 @@ function calcularPontuacao(termoBusca, produto, eanBuscado) {
   const item = produto.items?.[0];
 
   if (temIncompatibilidade(buscado, nome)) {
+    return -999;
+  }
+
+  if (buscado.includes("integral") && !nome.includes("integral")) {
     return -999;
   }
 
