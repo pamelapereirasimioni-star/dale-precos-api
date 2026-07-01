@@ -21,22 +21,54 @@ function normalizarTexto(texto) {
     .trim();
 }
 
+function limparNomeBusca(nome) {
+  return normalizarTexto(nome)
+    .replace(/\btipo\s*\d+\b/g, "")
+    .replace(/\bespeciais\b/g, "")
+    .replace(/\bgarrafa\b/g, "")
+    .replace(/\bcaixa\b/g, "")
+    .replace(/\bpet\b/g, "")
+    .replace(/\bembalagem\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function extrairPeso(texto) {
   const normalizado = normalizarTexto(texto);
   const match = normalizado.match(/(\d+(?:[.,]\d+)?)\s?(kg|g|ml|l)/);
-
   if (!match) return null;
-
   return `${match[1].replace(",", ".")}${match[2]}`;
 }
 
+function temIncompatibilidade(buscado, encontrado) {
+  const pares = [
+    ["integral", "semi desnatado"],
+    ["integral", "desnatado"],
+    ["integral", "zero lactose"],
+    ["integral", "protein"],
+    ["girassol", "soja"],
+    ["soja", "girassol"],
+    ["carioca", "preto"],
+    ["preto", "carioca"],
+    ["carioca", "branco"],
+    ["branco", "carioca"]
+  ];
+
+  return pares.some(([querido, errado]) =>
+    buscado.includes(querido) && encontrado.includes(errado)
+  );
+}
+
 function calcularPontuacao(termoBusca, produto, eanBuscado) {
-  const buscado = normalizarTexto(termoBusca);
+  const buscado = limparNomeBusca(termoBusca);
   const nome = normalizarTexto(produto.productName || produto.productTitle || "");
+  const item = produto.items?.[0];
+
+  if (temIncompatibilidade(buscado, nome)) {
+    return -999;
+  }
 
   let pontos = 0;
-
-  const item = produto.items?.[0];
 
   if (eanBuscado && item?.ean && String(item.ean) === String(eanBuscado)) {
     pontos += 1000;
@@ -45,24 +77,16 @@ function calcularPontuacao(termoBusca, produto, eanBuscado) {
   const palavras = buscado.split(" ").filter((p) => p.length > 2);
 
   for (const palavra of palavras) {
-    if (nome.includes(palavra)) pontos += 5;
-    else pontos -= 2;
+    if (nome.includes(palavra)) pontos += 8;
+    else pontos -= 3;
   }
 
   const pesoBuscado = extrairPeso(buscado);
   const pesoProduto = extrairPeso(nome);
 
   if (pesoBuscado && pesoProduto) {
-    if (pesoBuscado === pesoProduto) pontos += 80;
-    else pontos -= 100;
-  }
-
-  const termosProibidos = ["pronto", "branco", "preto", "500g", "380g"];
-
-  for (const termo of termosProibidos) {
-    if (!buscado.includes(termo) && nome.includes(termo)) {
-      pontos -= 40;
-    }
+    if (pesoBuscado === pesoProduto) pontos += 100;
+    else pontos -= 150;
   }
 
   return pontos;
@@ -108,7 +132,13 @@ function escolherMelhorProduto(termoBusca, produtos, eanBuscado) {
     }))
   );
 
-  return ordenados[0].produto;
+  const melhor = ordenados[0];
+
+  if (!melhor || melhor.pontuacao < 20) {
+    return null;
+  }
+
+  return melhor.produto;
 }
 
 async function consultarVTEX(url) {
@@ -137,7 +167,7 @@ async function buscarPorEAN(ean) {
 }
 
 async function buscarPorNome(termoBusca) {
-  const termo = String(termoBusca || "").trim();
+  const termo = limparNomeBusca(termoBusca);
 
   if (!termo) return [];
 
@@ -153,8 +183,8 @@ async function buscarSavegnagoVTEX(termoBusca, eanBuscado) {
     produtos = await buscarPorEAN(eanBuscado);
 
     if (Array.isArray(produtos) && produtos.length > 0) {
-      const produtoExato = produtos.find(
-        (p) => p.items?.some((item) => String(item.ean) === String(eanBuscado))
+      const produtoExato = produtos.find((p) =>
+        p.items?.some((item) => String(item.ean) === String(eanBuscado))
       );
 
       if (produtoExato) {
@@ -217,6 +247,7 @@ app.post("/prices/batch", async (req, res) => {
     const resultado = await buscarSavegnagoVTEX(termoBusca, eanBuscado);
 
     console.log("Termo buscado:", termoBusca);
+    console.log("Termo limpo:", limparNomeBusca(termoBusca));
     console.log("EAN buscado:", eanBuscado);
     console.log("Resultado VTEX:", resultado);
 
