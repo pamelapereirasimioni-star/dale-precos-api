@@ -30,7 +30,7 @@ function limparNomeBusca(nome) {
     .replace(/\bpet\b/g, "")
     .replace(/\bembalagem\b/g, "")
     .replace(/\buht\b/g, "")
-    .replace(/\slonga\s+vida\b/g, "")
+    .replace(/\blonga vida\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -38,40 +38,153 @@ function limparNomeBusca(nome) {
 function extrairPeso(texto) {
   const normalizado = normalizarTexto(texto);
   const match = normalizado.match(/(\d+(?:[.,]\d+)?)\s?(kg|g|ml|l)/);
+
   if (!match) return null;
+
   return `${match[1].replace(",", ".")}${match[2]}`;
 }
 
-function temIncompatibilidade(buscado, encontrado) {
-  const pares = [
-    ["integral", "semi desnatado"],
-    ["integral", "semidesnatado"],
+function detectarAtributos(texto) {
+  const t = normalizarTexto(texto);
+
+  const atributos = {
+    categoria: null,
+    tipo: null,
+    marca: null,
+    peso: extrairPeso(t),
+    flags: []
+  };
+
+  if (t.includes("leite")) atributos.categoria = "leite";
+  if (t.includes("oleo")) atributos.categoria = "oleo";
+  if (t.includes("feijao")) atributos.categoria = "feijao";
+  if (t.includes("arroz")) atributos.categoria = "arroz";
+  if (t.includes("coca")) atributos.categoria = "refrigerante";
+  if (t.includes("macarrao")) atributos.categoria = "macarrao";
+  if (t.includes("acucar")) atributos.categoria = "acucar";
+  if (t.includes("manteiga")) atributos.categoria = "manteiga";
+  if (t.includes("requeijao")) atributos.categoria = "requeijao";
+
+  const marcas = [
+    "piracanjuba",
+    "italac",
+    "camil",
+    "tio joao",
+    "pilao",
+    "renata",
+    "liza",
+    "uniao",
+    "aviacao",
+    "coca cola",
+    "coca-cola"
+  ];
+
+  for (const marca of marcas) {
+    if (t.includes(marca)) {
+      atributos.marca = marca.replace("-", " ");
+      break;
+    }
+  }
+
+  const tipos = [
+    "integral",
+    "semi desnatado",
+    "semidesnatado",
+    "desnatado",
+    "zero lactose",
+    "lactose",
+    "protein",
+    "a2",
+    "girassol",
+    "soja",
+    "carioca",
+    "preto",
+    "branco",
+    "parboilizado",
+    "tipo 1",
+    "espaguete",
+    "zero",
+    "sem sal",
+    "com sal"
+  ];
+
+  for (const tipo of tipos) {
+    if (t.includes(tipo)) {
+      atributos.flags.push(tipo);
+    }
+  }
+
+  return atributos;
+}
+
+function validarCorrespondencia(termoBusca, produto) {
+  const buscadoTexto = normalizarTexto(termoBusca);
+  const encontradoTexto = normalizarTexto(produto.productName || produto.productTitle || "");
+
+  const buscado = detectarAtributos(termoBusca);
+  const encontrado = detectarAtributos(produto.productName || produto.productTitle || "");
+
+  if (buscado.categoria && encontrado.categoria && buscado.categoria !== encontrado.categoria) {
+    return false;
+  }
+
+  if (buscado.marca && encontrado.marca && buscado.marca !== encontrado.marca) {
+    return false;
+  }
+
+  if (buscado.peso && encontrado.peso && buscado.peso !== encontrado.peso) {
+    return false;
+  }
+
+  const regrasObrigatorias = [
+    "integral",
+    "semi desnatado",
+    "semidesnatado",
+    "desnatado",
+    "zero lactose",
+    "protein",
+    "a2",
+    "girassol",
+    "soja",
+    "carioca",
+    "preto",
+    "branco",
+    "parboilizado",
+    "zero",
+    "sem sal",
+    "com sal"
+  ];
+
+  for (const regra of regrasObrigatorias) {
+    if (buscadoTexto.includes(regra) && !encontradoTexto.includes(regra)) {
+      return false;
+    }
+  }
+
+  const incompatibilidades = [
+    ["integral", "semi"],
     ["integral", "desnatado"],
     ["integral", "zero lactose"],
-    ["integral", "s lactose"],
-    ["integral", "lactose"],
     ["integral", "protein"],
     ["integral", "a2"],
-
-    ["semi desnatado", "integral"],
-    ["semidesnatado", "integral"],
-    ["desnatado", "integral"],
-    ["zero lactose", "integral"],
-    ["protein", "integral"],
-    ["a2", "integral"],
-
     ["girassol", "soja"],
     ["soja", "girassol"],
-
     ["carioca", "preto"],
     ["preto", "carioca"],
     ["carioca", "branco"],
-    ["branco", "carioca"]
+    ["branco", "carioca"],
+    ["zero", "tradicional"],
+    ["sem sal", "com sal"],
+    ["com sal", "sem sal"]
   ];
 
-  return pares.some(([querido, errado]) =>
-    buscado.includes(querido) && encontrado.includes(errado)
-  );
+  for (const [querido, errado] of incompatibilidades) {
+    if (buscadoTexto.includes(querido) && encontradoTexto.includes(errado)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function calcularPontuacao(termoBusca, produto, eanBuscado) {
@@ -79,11 +192,7 @@ function calcularPontuacao(termoBusca, produto, eanBuscado) {
   const nome = normalizarTexto(produto.productName || produto.productTitle || "");
   const item = produto.items?.[0];
 
-  if (temIncompatibilidade(buscado, nome)) {
-    return -999;
-  }
-
-  if (buscado.includes("integral") && !nome.includes("integral")) {
+  if (!validarCorrespondencia(termoBusca, produto)) {
     return -999;
   }
 
@@ -93,19 +202,26 @@ function calcularPontuacao(termoBusca, produto, eanBuscado) {
     pontos += 1000;
   }
 
+  const buscadoAttr = detectarAtributos(termoBusca);
+  const produtoAttr = detectarAtributos(nome);
+
+  if (buscadoAttr.categoria && produtoAttr.categoria === buscadoAttr.categoria) {
+    pontos += 80;
+  }
+
+  if (buscadoAttr.marca && produtoAttr.marca === buscadoAttr.marca) {
+    pontos += 80;
+  }
+
+  if (buscadoAttr.peso && produtoAttr.peso === buscadoAttr.peso) {
+    pontos += 120;
+  }
+
   const palavras = buscado.split(" ").filter((p) => p.length > 2);
 
   for (const palavra of palavras) {
     if (nome.includes(palavra)) pontos += 8;
-    else pontos -= 3;
-  }
-
-  const pesoBuscado = extrairPeso(buscado);
-  const pesoProduto = extrairPeso(nome);
-
-  if (pesoBuscado && pesoProduto) {
-    if (pesoBuscado === pesoProduto) pontos += 100;
-    else pontos -= 150;
+    else pontos -= 4;
   }
 
   return pontos;
@@ -153,7 +269,7 @@ function escolherMelhorProduto(termoBusca, produtos, eanBuscado) {
 
   const melhor = ordenados[0];
 
-  if (!melhor || melhor.pontuacao < 20) {
+  if (!melhor || melhor.pontuacao < 80) {
     return null;
   }
 
@@ -206,7 +322,7 @@ async function buscarSavegnagoVTEX(termoBusca, eanBuscado) {
         p.items?.some((item) => String(item.ean) === String(eanBuscado))
       );
 
-      if (produtoExato) {
+      if (produtoExato && validarCorrespondencia(termoBusca, produtoExato)) {
         return extrairMelhorOferta(produtoExato);
       }
     }
