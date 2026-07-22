@@ -1,427 +1,781 @@
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 
+const {
+  limparNomeBusca
+} = require("./utils/texto");
+
+const {
+  buscarProduto: buscarSavegnago
+} = require("./supermercados/savegnago");
+
+const {
+  buscarProduto: buscarJauServe
+} = require("./supermercados/jauserve");
+
+const {
+  buscarProduto: buscarTonin
+} = require("./supermercados/tonin");
+
 const app = express();
+
+/*
+ * CONFIGURAÇÕES
+ */
+
+const PORT =
+  Number(process.env.PORT) || 3000;
+
+const LIMITE_PRODUTOS_LOTE =
+  Number(
+    process.env.LIMITE_PRODUTOS_LOTE
+  ) || 100;
+
+const CONCORRENCIA_PRODUTOS =
+  Number(
+    process.env.CONCORRENCIA_PRODUTOS
+  ) || 3;
+
+const CACHE_TTL_MS =
+  Number(process.env.CACHE_TTL_MS) ||
+  10 * 60 * 1000;
+
+const TONIN_ENABLED =
+  String(
+    process.env.TONIN_ENABLED || "false"
+  ).toLowerCase() === "true";
+
+/*
+ * MIDDLEWARES
+ */
 
 app.use(cors());
 app.options("*", cors());
-app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send("Servidor DALE online 🚀");
-});
+app.use(
+  express.json({
+    limit: "5mb"
+  })
+);
 
-function normalizarTexto(texto) {
-  return String(texto || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\w\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+/*
+ * CACHE EM MEMÓRIA
+ */
+
+const cacheConsultas = new Map();
+
+function gerarChaveCache(
+  termoBusca,
+  eanBuscado
+) {
+  return [
+    limparNomeBusca(termoBusca || ""),
+    String(eanBuscado || "").trim()
+  ].join("|");
 }
 
-function limparNomeBusca(nome) {
-  return normalizarTexto(nome)
-    .replace(/\btipo\s*\d+\b/g, "")
-    .replace(/\bespeciais\b/g, "")
-    .replace(/\bgarrafa\b/g, "")
-    .replace(/\bcaixa\b/g, "")
-    .replace(/\bpet\b/g, "")
-    .replace(/\bembalagem\b/g, "")
-    .replace(/\buht\b/g, "")
-    .replace(/\blonga vida\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+function obterDoCache(chave) {
+  const registro =
+    cacheConsultas.get(chave);
 
-function extrairPeso(texto) {
-  const normalizado = normalizarTexto(texto);
-  const match = normalizado.match(/(\d+(?:[.,]\d+)?)\s?(kg|g|ml|l)/);
-
-  if (!match) return null;
-
-  return `${match[1].replace(",", ".")}${match[2]}`;
-}
-
-function detectarAtributos(texto) {
-  const t = normalizarTexto(texto);
-
-  const atributos = {
-    categoria: null,
-    tipo: null,
-    marca: null,
-    peso: extrairPeso(t),
-    flags: []
-  };
-
-  if (t.includes("leite")) atributos.categoria = "leite";
-  if (t.includes("oleo")) atributos.categoria = "oleo";
-  if (t.includes("feijao")) atributos.categoria = "feijao";
-  if (t.includes("arroz")) atributos.categoria = "arroz";
-  if (t.includes("coca")) atributos.categoria = "refrigerante";
-  if (t.includes("macarrao")) atributos.categoria = "macarrao";
-  if (t.includes("acucar")) atributos.categoria = "acucar";
-  if (t.includes("manteiga")) atributos.categoria = "manteiga";
-  if (t.includes("requeijao")) atributos.categoria = "requeijao";
-
-  const marcas = [
-    "piracanjuba",
-    "italac",
-    "camil",
-    "tio joao",
-    "pilao",
-    "renata",
-    "liza",
-    "uniao",
-    "aviacao",
-    "coca cola",
-    "coca-cola"
-  ];
-
-  for (const marca of marcas) {
-    if (t.includes(marca)) {
-      atributos.marca = marca.replace("-", " ");
-      break;
-    }
-  }
-
-  const tipos = [
-    "integral",
-    "semi desnatado",
-    "semidesnatado",
-    "desnatado",
-    "zero lactose",
-    "lactose",
-    "protein",
-    "a2",
-    "girassol",
-    "soja",
-    "carioca",
-    "preto",
-    "branco",
-    "parboilizado",
-    "tipo 1",
-    "espaguete",
-    "zero",
-    "sem sal",
-    "com sal"
-  ];
-
-  for (const tipo of tipos) {
-    if (t.includes(tipo)) {
-      atributos.flags.push(tipo);
-    }
-  }
-
-  return atributos;
-}
-
-function validarCorrespondencia(termoBusca, produto) {
-  const buscadoTexto = normalizarTexto(termoBusca);
-  const encontradoTexto = normalizarTexto(produto.productName || produto.productTitle || "");
-
-  const buscado = detectarAtributos(termoBusca);
-  const encontrado = detectarAtributos(produto.productName || produto.productTitle || "");
-
-  if (buscado.categoria && encontrado.categoria && buscado.categoria !== encontrado.categoria) {
-    return false;
-  }
-
-  if (buscado.marca && encontrado.marca && buscado.marca !== encontrado.marca) {
-    return false;
-  }
-
-  if (buscado.peso && encontrado.peso && buscado.peso !== encontrado.peso) {
-    return false;
-  }
-
-  const regrasObrigatorias = [
-    "integral",
-    "semi desnatado",
-    "semidesnatado",
-    "desnatado",
-    "zero lactose",
-    "protein",
-    "a2",
-    "girassol",
-    "soja",
-    "carioca",
-    "preto",
-    "branco",
-    "parboilizado",
-    "zero",
-    "sem sal",
-    "com sal"
-  ];
-
-  for (const regra of regrasObrigatorias) {
-    if (buscadoTexto.includes(regra) && !encontradoTexto.includes(regra)) {
-      return false;
-    }
-  }
-
-  const incompatibilidades = [
-    ["integral", "semi"],
-    ["integral", "desnatado"],
-    ["integral", "zero lactose"],
-    ["integral", "protein"],
-    ["integral", "a2"],
-    ["girassol", "soja"],
-    ["soja", "girassol"],
-    ["carioca", "preto"],
-    ["preto", "carioca"],
-    ["carioca", "branco"],
-    ["branco", "carioca"],
-    ["zero", "tradicional"],
-    ["sem sal", "com sal"],
-    ["com sal", "sem sal"]
-  ];
-
-  for (const [querido, errado] of incompatibilidades) {
-    if (buscadoTexto.includes(querido) && encontradoTexto.includes(errado)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function calcularPontuacao(termoBusca, produto, eanBuscado) {
-  const buscado = limparNomeBusca(termoBusca);
-  const nome = normalizarTexto(produto.productName || produto.productTitle || "");
-  const item = produto.items?.[0];
-
-  if (!validarCorrespondencia(termoBusca, produto)) {
-    return -999;
-  }
-
-  let pontos = 0;
-
-  if (eanBuscado && item?.ean && String(item.ean) === String(eanBuscado)) {
-    pontos += 1000;
-  }
-
-  const buscadoAttr = detectarAtributos(termoBusca);
-  const produtoAttr = detectarAtributos(nome);
-
-  if (buscadoAttr.categoria && produtoAttr.categoria === buscadoAttr.categoria) {
-    pontos += 80;
-  }
-
-  if (buscadoAttr.marca && produtoAttr.marca === buscadoAttr.marca) {
-    pontos += 80;
-  }
-
-  if (buscadoAttr.peso && produtoAttr.peso === buscadoAttr.peso) {
-    pontos += 120;
-  }
-
-  const palavras = buscado.split(" ").filter((p) => p.length > 2);
-
-  for (const palavra of palavras) {
-    if (nome.includes(palavra)) pontos += 8;
-    else pontos -= 4;
-  }
-
-  return pontos;
-}
-
-function extrairMelhorOferta(produto) {
-  const item = produto.items?.[0];
-  const seller = item?.sellers?.find((s) => s.sellerDefault) || item?.sellers?.[0];
-  const oferta = seller?.commertialOffer;
-
-  if (!item || !seller || !oferta) return null;
-
-  return {
-    productName: produto.productName,
-    productTitle: produto.productTitle,
-    ean: item.ean,
-    itemId: item.itemId,
-    sellerId: seller.sellerId,
-    price: oferta.Price || null,
-    listPrice: oferta.ListPrice || null,
-    available: oferta.IsAvailable === true,
-    image: item.images?.[0]?.imageUrl || null,
-    url: produto.link || null
-  };
-}
-
-function escolherMelhorProduto(termoBusca, produtos, eanBuscado) {
-  if (!Array.isArray(produtos) || produtos.length === 0) return null;
-
-  const ordenados = produtos
-    .map((produto) => ({
-      produto,
-      pontuacao: calcularPontuacao(termoBusca, produto, eanBuscado)
-    }))
-    .sort((a, b) => b.pontuacao - a.pontuacao);
-
-  console.log(
-    "Ranking:",
-    ordenados.slice(0, 5).map((x) => ({
-      nome: x.produto.productName,
-      ean: x.produto.items?.[0]?.ean,
-      pontuacao: x.pontuacao
-    }))
-  );
-
-  const melhor = ordenados[0];
-
-  if (!melhor || melhor.pontuacao < 80) {
+  if (!registro) {
     return null;
   }
 
-  return melhor.produto;
-}
+  const expirou =
+    Date.now() - registro.criadoEm >
+    CACHE_TTL_MS;
 
-async function consultarVTEX(url) {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "DALE-Precos/1.0"
-    }
-  });
-
-  if (!response.ok) {
-    console.log("Erro VTEX:", response.status, url);
-    return [];
+  if (expirou) {
+    cacheConsultas.delete(chave);
+    return null;
   }
 
-  return response.json();
+  return registro.resultados;
 }
 
-async function buscarPorEAN(ean) {
-  if (!ean) return [];
-
-  const url = `https://www.savegnago.com.br/api/catalog_system/pub/products/search?fq=alternateIds_Ean:${encodeURIComponent(ean)}`;
-
-  return consultarVTEX(url);
+function salvarNoCache(
+  chave,
+  resultados
+) {
+  cacheConsultas.set(chave, {
+    criadoEm: Date.now(),
+    resultados
+  });
 }
 
-async function buscarPorNome(termoBusca) {
-  const termo = limparNomeBusca(termoBusca);
+function limparCacheExpirado() {
+  const agora = Date.now();
 
-  if (!termo) return [];
+  for (
+    const [chave, registro]
+    of cacheConsultas.entries()
+  ) {
+    const expirou =
+      agora - registro.criadoEm >
+      CACHE_TTL_MS;
 
-  const url = `https://www.savegnago.com.br/api/catalog_system/pub/products/search/${encodeURIComponent(termo)}?_from=0&_to=30`;
-
-  return consultarVTEX(url);
+    if (expirou) {
+      cacheConsultas.delete(chave);
+    }
+  }
 }
 
-async function buscarSavegnagoVTEX(termoBusca, eanBuscado) {
-  let produtos = [];
+const intervaloLimpezaCache =
+  setInterval(
+    limparCacheExpirado,
+    5 * 60 * 1000
+  );
 
-  if (eanBuscado) {
-    produtos = await buscarPorEAN(eanBuscado);
+intervaloLimpezaCache.unref();
 
-    if (Array.isArray(produtos) && produtos.length > 0) {
-      const produtoExato = produtos.find((p) =>
-        p.items?.some((item) => String(item.ean) === String(eanBuscado))
+/*
+ * SUPERMERCADOS
+ */
+
+function obterSupermercadosAtivos() {
+  const supermercados = [
+    {
+      id: "savegnago",
+      buscarProduto: buscarSavegnago
+    },
+    {
+      id: "jauserve",
+      buscarProduto: buscarJauServe
+    }
+  ];
+
+  if (TONIN_ENABLED) {
+    supermercados.push({
+      id: "tonin",
+      buscarProduto: buscarTonin
+    });
+  }
+
+  return supermercados;
+}
+
+/*
+ * NORMALIZAÇÃO DOS PRODUTOS RECEBIDOS
+ */
+
+function normalizarProdutoRecebido(
+  produto,
+  indice
+) {
+  if (
+    !produto ||
+    typeof produto !== "object"
+  ) {
+    return null;
+  }
+
+  const nome =
+    produto.nome ||
+    produto.name ||
+    produto.productName ||
+    "";
+
+  const ean =
+    produto.ean ||
+    produto.barcode ||
+    produto.codigoBarras ||
+    "";
+
+  const termoBusca =
+    String(nome || ean)
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!termoBusca) {
+    return null;
+  }
+
+  return {
+    indice,
+    id:
+      produto.id ||
+      produto.productId ||
+      null,
+
+    nome:
+      String(nome || "")
+        .replace(/\s+/g, " ")
+        .trim(),
+
+    termoBusca,
+
+    ean:
+      ean
+        ? String(ean).trim()
+        : null,
+
+    quantidade:
+      Number(produto.quantidade) ||
+      Number(produto.quantity) ||
+      1,
+
+    original: produto
+  };
+}
+
+/*
+ * CONSULTA NOS SUPERMERCADOS
+ */
+
+async function buscarEmTodosMercados(
+  termoBusca,
+  eanBuscado
+) {
+  const chaveCache =
+    gerarChaveCache(
+      termoBusca,
+      eanBuscado
+    );
+
+  const cache =
+    obterDoCache(chaveCache);
+
+  if (cache) {
+    console.log(
+      `CACHE: ${termoBusca}`
+    );
+
+    return cache;
+  }
+
+  const supermercados =
+    obterSupermercadosAtivos();
+
+  const consultas =
+    supermercados.map(
+      async (supermercado) => {
+        try {
+          const resultado =
+            await supermercado.buscarProduto(
+              termoBusca,
+              eanBuscado
+            );
+
+          return {
+            supermercado:
+              supermercado.id,
+
+            resultado
+          };
+        } catch (erro) {
+          console.error(
+            `Erro no supermercado ${supermercado.id}:`,
+            erro.message
+          );
+
+          return {
+            supermercado:
+              supermercado.id,
+
+            resultado: null
+          };
+        }
+      }
+    );
+
+  const respostas =
+    await Promise.all(consultas);
+
+  const resultados = respostas
+    .filter(
+      (resposta) =>
+        resposta.resultado
+    )
+    .map(
+      (resposta) =>
+        resposta.resultado
+    );
+
+  /*
+   * Só guardamos no cache quando algum
+   * supermercado encontrou o produto.
+   */
+  if (resultados.length > 0) {
+    salvarNoCache(
+      chaveCache,
+      resultados
+    );
+  }
+
+  return resultados;
+}
+
+/*
+ * FORMATAÇÃO PARA O LOVABLE
+ */
+
+function formatarResultadoBatch(
+  produtoRecebido,
+  resultado
+) {
+  const price =
+    Number(resultado.price);
+
+  const listPrice =
+    Number(resultado.listPrice);
+
+  return {
+    /*
+     * EAN original enviado pelo Lovable.
+     */
+    ean:
+      produtoRecebido.ean ||
+      resultado.ean ||
+      null,
+
+    /*
+     * Identificação opcional do produto
+     * dentro do catálogo do Lovable.
+     */
+    productId:
+      produtoRecebido.id,
+
+    supermarketId:
+      resultado.supermarketId,
+
+    price:
+      Number.isFinite(price) &&
+      price > 0
+        ? price
+        : null,
+
+    available:
+      resultado.available === true,
+
+    promo:
+      Number.isFinite(listPrice) &&
+      Number.isFinite(price) &&
+      listPrice > price,
+
+    lastUpdate:
+      resultado.lastUpdate ||
+      new Date().toISOString(),
+
+    source:
+      resultado.supermarketId,
+
+    productName:
+      resultado.productName ||
+      produtoRecebido.termoBusca,
+
+    searchedProductName:
+      produtoRecebido.nome ||
+      produtoRecebido.termoBusca,
+
+    matchedEan:
+      resultado.ean ||
+      null,
+
+    itemId:
+      resultado.itemId ||
+      null,
+
+    sellerId:
+      resultado.sellerId ||
+      null,
+
+    listPrice:
+      Number.isFinite(listPrice) &&
+      listPrice > 0
+        ? listPrice
+        : null,
+
+    image:
+      resultado.image ||
+      null,
+
+    url:
+      resultado.url ||
+      null,
+
+    quantity:
+      produtoRecebido.quantidade
+  };
+}
+
+/*
+ * CONTROLE DE CONCORRÊNCIA
+ *
+ * Evita abrir dezenas de pesquisas ao
+ * mesmo tempo e sobrecarregar o Jaú Serve,
+ * o computador ou o Railway.
+ */
+
+async function processarComLimite(
+  itens,
+  limite,
+  processador
+) {
+  const resultados =
+    new Array(itens.length);
+
+  let proximoIndice = 0;
+
+  async function trabalhador() {
+    while (true) {
+      const indiceAtual =
+        proximoIndice;
+
+      proximoIndice += 1;
+
+      if (
+        indiceAtual >= itens.length
+      ) {
+        return;
+      }
+
+      try {
+        resultados[indiceAtual] =
+          await processador(
+            itens[indiceAtual],
+            indiceAtual
+          );
+      } catch (erro) {
+        console.error(
+          `Erro ao processar item ${indiceAtual}:`,
+          erro.message
+        );
+
+        resultados[indiceAtual] = [];
+      }
+    }
+  }
+
+  const totalTrabalhadores =
+    Math.min(
+      Math.max(1, limite),
+      itens.length
+    );
+
+  const trabalhadores =
+    Array.from(
+      {
+        length:
+          totalTrabalhadores
+      },
+      () => trabalhador()
+    );
+
+  await Promise.all(
+    trabalhadores
+  );
+
+  return resultados;
+}
+
+/*
+ * ROTAS
+ */
+
+app.get("/", (req, res) => {
+  res.send(
+    "Servidor DALE online 🚀"
+  );
+});
+
+app.get("/health", (req, res) => {
+  return res.json({
+    online: true,
+    service: "dale-precos-api",
+    supermarkets:
+      obterSupermercadosAtivos()
+        .map(
+          (supermercado) =>
+            supermercado.id
+        ),
+
+    cacheEntries:
+      cacheConsultas.size,
+
+    date:
+      new Date().toISOString()
+  });
+});
+
+/*
+ * TESTE DE UM PRODUTO
+ */
+
+app.get(
+  "/buscar",
+  async (req, res) => {
+    const produto =
+      req.query.q;
+
+    const ean =
+      req.query.ean;
+
+    if (!produto && !ean) {
+      return res.status(400).json({
+        erro:
+          "Produto ou EAN não informado"
+      });
+    }
+
+    const termoBusca =
+      String(produto || ean)
+        .replace(/\s+/g, " ")
+        .trim();
+
+    try {
+      const produtos =
+        await buscarEmTodosMercados(
+          termoBusca,
+          ean
+        );
+
+      return res.json({
+        produto:
+          termoBusca,
+
+        ean:
+          ean || null,
+
+        total:
+          produtos.length,
+
+        produtos,
+
+        fonte:
+          "multi-mercados"
+      });
+    } catch (erro) {
+      console.error(
+        "Erro /buscar:",
+        erro.message
       );
 
-      if (produtoExato && validarCorrespondencia(termoBusca, produtoExato)) {
-        return extrairMelhorOferta(produtoExato);
-      }
+      return res
+        .status(500)
+        .json({
+          erro: true,
+          mensagem:
+            erro.message
+        });
     }
   }
+);
 
-  produtos = await buscarPorNome(termoBusca);
+/*
+ * BUSCA DE VÁRIOS PRODUTOS
+ */
 
-  const melhorProduto = escolherMelhorProduto(termoBusca, produtos, eanBuscado);
+app.post(
+  "/prices/batch",
+  async (req, res) => {
+    const inicio =
+      Date.now();
 
-  if (!melhorProduto) return null;
+    console.log(
+      "POST /prices/batch RECEBIDO"
+    );
 
-  return extrairMelhorOferta(melhorProduto);
-}
+    try {
+      const produtosRecebidos =
+        Array.isArray(
+          req.body.products
+        )
+          ? req.body.products
+          : [];
 
-app.get("/buscar", async (req, res) => {
-  const produto = req.query.q;
-  const ean = req.query.ean;
+      if (
+        produtosRecebidos.length === 0
+      ) {
+        return res.status(400).json({
+          erro:
+            "Nenhum produto foi informado.",
 
-  if (!produto && !ean) {
-    return res.json({ erro: "Produto ou EAN não informado" });
-  }
+          exemplo: {
+            products: [
+              {
+                nome:
+                  "Feijão Preto Empório São João 1kg",
 
-  try {
-    const resultado = await buscarSavegnagoVTEX(produto || ean, ean);
+                ean:
+                  "7896086422217"
+              }
+            ]
+          }
+        });
+      }
 
-    return res.json({
-      produto: produto || ean,
-      mercado: "Savegnago",
-      total: resultado ? 1 : 0,
-      produtos: resultado ? [resultado] : [],
-      fonte: "savegnago-vtex"
-    });
-  } catch (erro) {
-    console.error("Erro /buscar:", erro.message);
+      if (
+        produtosRecebidos.length >
+        LIMITE_PRODUTOS_LOTE
+      ) {
+        return res.status(400).json({
+          erro:
+            "Quantidade de produtos acima do limite.",
 
-    return res.json({
-      erro: true,
-      mensagem: erro.message
-    });
-  }
-});
+          quantidadeRecebida:
+            produtosRecebidos.length,
 
-app.post("/prices/batch", async (req, res) => {
-  console.log("POST /prices/batch RECEBIDO");
-  console.log("Body recebido:", req.body);
+          limite:
+            LIMITE_PRODUTOS_LOTE
+        });
+      }
 
-  try {
-    const produto = req.body.products?.[0];
+      const produtosNormalizados =
+        produtosRecebidos
+          .map(
+            normalizarProdutoRecebido
+          )
+          .filter(Boolean);
 
-    if (!produto || (!produto.nome && !produto.name && !produto.ean)) {
-      return res.json([]);
+      if (
+        produtosNormalizados.length === 0
+      ) {
+        return res.status(400).json({
+          erro:
+            "Nenhum produto válido foi informado."
+        });
+      }
+
+      console.log(
+        `Produtos recebidos: ${produtosNormalizados.length}`
+      );
+
+      const resultadosPorProduto =
+        await processarComLimite(
+          produtosNormalizados,
+          CONCORRENCIA_PRODUTOS,
+
+          async (
+            produto,
+            indice
+          ) => {
+            console.log(
+              `[${indice + 1}/${produtosNormalizados.length}] Buscando:`,
+              produto.termoBusca,
+              produto.ean
+                ? `| EAN: ${produto.ean}`
+                : ""
+            );
+
+            const resultados =
+              await buscarEmTodosMercados(
+                produto.termoBusca,
+                produto.ean
+              );
+
+            return resultados.map(
+              (resultado) =>
+                formatarResultadoBatch(
+                  produto,
+                  resultado
+                )
+            );
+          }
+        );
+
+      const resultados =
+        resultadosPorProduto.flat();
+
+      const duracaoMs =
+        Date.now() - inicio;
+
+      console.log(
+        "POST /prices/batch FINALIZADO"
+      );
+
+      console.log(
+        "Produtos pesquisados:",
+        produtosNormalizados.length
+      );
+
+      console.log(
+        "Preços encontrados:",
+        resultados.length
+      );
+
+      console.log(
+        "Tempo total:",
+        `${duracaoMs} ms`
+      );
+
+      /*
+       * Mantemos um ARRAY puro porque esse
+       * era o formato que seu Lovable e seu
+       * n8n já esperavam anteriormente.
+       */
+      return res.json(
+        resultados
+      );
+    } catch (erro) {
+      console.error(
+        "Erro /prices/batch:",
+        erro
+      );
+
+      return res
+        .status(500)
+        .json([]);
     }
-
-    const termoBusca = produto.nome || produto.name || produto.ean;
-    const eanBuscado = produto.ean;
-
-    const resultado = await buscarSavegnagoVTEX(termoBusca, eanBuscado);
-
-    console.log("Termo buscado:", termoBusca);
-    console.log("Termo limpo:", limparNomeBusca(termoBusca));
-    console.log("EAN buscado:", eanBuscado);
-    console.log("Resultado VTEX:", resultado);
-
-    return res.json([
-      {
-        ean: produto.ean,
-        supermarketId: "savegnago",
-        price: resultado?.price || null,
-        available: resultado?.available || false,
-        promo: false,
-        lastUpdate: new Date().toISOString(),
-        source: "savegnago-vtex",
-        productName: resultado?.productName || termoBusca,
-        matchedEan: resultado?.ean || null,
-        itemId: resultado?.itemId || null,
-        image: resultado?.image || null,
-        url: resultado?.url || null
-      }
-    ]);
-  } catch (erro) {
-    console.error("Erro /prices/batch:", erro.message);
-
-    return res.json([
-      {
-        ean: req.body.products?.[0]?.ean || null,
-        supermarketId: "savegnago",
-        price: null,
-        available: false,
-        promo: false,
-        lastUpdate: new Date().toISOString(),
-        source: "savegnago-vtex",
-        productName: req.body.products?.[0]?.nome || null
-      }
-    ]);
   }
-});
+);
 
-const PORT = process.env.PORT || 3000;
+/*
+ * LIMPEZA MANUAL DO CACHE
+ */
 
-app.listen(PORT, () => {
-  console.log("Servidor rodando 🚀");
-});
+app.delete(
+  "/cache",
+  (req, res) => {
+    const quantidade =
+      cacheConsultas.size;
+
+    cacheConsultas.clear();
+
+    return res.json({
+      sucesso: true,
+      removidos:
+        quantidade
+    });
+  }
+);
+
+/*
+ * INICIALIZAÇÃO
+ */
+
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `Servidor rodando na porta ${PORT} 🚀`
+    );
+
+    console.log(
+      "Supermercados ativos:",
+      obterSupermercadosAtivos()
+        .map(
+          (supermercado) =>
+            supermercado.id
+        )
+        .join(", ")
+    );
+
+    console.log(
+      "Limite por lote:",
+      LIMITE_PRODUTOS_LOTE
+    );
+
+    console.log(
+      "Concorrência:",
+      CONCORRENCIA_PRODUTOS
+    );
+
+    console.log(
+      "Tonin ativo:",
+      TONIN_ENABLED
+    );
+  }
+);
