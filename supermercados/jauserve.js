@@ -1,3 +1,13 @@
+/*
+ * IMPORTANTE PARA O RENDER:
+ * Mantém os navegadores do Playwright dentro do projeto (node_modules),
+ * para que sejam enviados junto com o build e continuem disponíveis
+ * quando o serviço entrar em execução.
+ */
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = "0";
+}
+
 const { chromium } = require("playwright");
 const cheerio = require("cheerio");
 
@@ -89,12 +99,21 @@ async function iniciarSessao() {
   console.log("Chromium executablePath esperado:", chromium.executablePath());
   console.log("================================================");
 
+  const executablePath = chromium.executablePath();
+
+  console.log(
+    "Executável Chromium escolhido:",
+    executablePath
+  );
+
   browser = await chromium.launch({
+    executablePath,
     headless: true,
     args: [
       "--disable-blink-features=AutomationControlled",
       "--disable-dev-shm-usage",
-      "--no-sandbox"
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
     ]
   });
 
