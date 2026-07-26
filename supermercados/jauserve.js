@@ -82,6 +82,13 @@ async function iniciarSessao() {
 
   await fecharSessao();
 
+  console.log("========== DEBUG PLAYWRIGHT JAÚ SERVE ==========");
+  console.log("Versão do Node:", process.version);
+  console.log("PLAYWRIGHT_BROWSERS_PATH:", process.env.PLAYWRIGHT_BROWSERS_PATH || "não definida");
+  console.log("HOME:", process.env.HOME || "não definido");
+  console.log("Chromium executablePath esperado:", chromium.executablePath());
+  console.log("================================================");
+
   browser = await chromium.launch({
     headless: true,
     args: [
@@ -802,8 +809,20 @@ async function buscarProdutoInterno(
     removerDuplicados(produtos);
 
   if (produtos.length === 0) {
+    console.log("========== DEBUG JAÚ SERVE: SEM PRODUTOS ==========");
+    console.log("Termo buscado:", termoBusca);
+    console.log("EAN buscado:", eanBuscado || null);
+    console.log("Termos tentados:", termos);
+    console.log("====================================================");
     return null;
   }
+
+  console.log("========== DEBUG JAÚ SERVE: PRODUTOS EXTRAÍDOS ==========");
+  console.log("Termo buscado:", termoBusca);
+  console.log("EAN buscado:", eanBuscado || null);
+  console.log("Quantidade de produtos após remover duplicados:", produtos.length);
+  console.dir(produtos, { depth: 8 });
+  console.log("=========================================================");
 
   const melhor =
     escolherMelhorProduto(
@@ -814,8 +833,18 @@ async function buscarProdutoInterno(
     );
 
   if (!melhor) {
+    console.log("========== DEBUG JAÚ SERVE: MELHOR NÃO ESCOLHIDO ==========");
+    console.log("Termo buscado:", termoBusca);
+    console.log("EAN buscado:", eanBuscado || null);
+    console.log("Quantidade de candidatos:", produtos.length);
+    console.dir(produtos, { depth: 8 });
+    console.log("============================================================");
     return null;
   }
+
+  console.log("========== DEBUG JAÚ SERVE: MELHOR PRODUTO ==========");
+  console.dir(melhor, { depth: 10 });
+  console.log("=====================================================");
 
   const item =
     melhor.items?.[0];
@@ -830,15 +859,25 @@ async function buscarProdutoInterno(
   const oferta =
     seller?.commertialOffer;
 
+  console.log("========== DEBUG JAÚ SERVE: ESTRUTURA FINAL ==========");
+  console.log("Item encontrado:", Boolean(item));
+  console.dir(item, { depth: 8 });
+  console.log("Seller encontrado:", Boolean(seller));
+  console.dir(seller, { depth: 8 });
+  console.log("Oferta encontrada:", Boolean(oferta));
+  console.dir(oferta, { depth: 8 });
+  console.log("=======================================================");
+
   if (
     !item ||
     !seller ||
     !oferta
   ) {
+    console.log("Jaú Serve: retorno nulo porque item, seller ou oferta não foi encontrado.");
     return null;
   }
 
-  return criarProduto({
+  const produtoCriado = criarProduto({
     supermarketId: "jauserve",
     productName:
       melhor.productName,
@@ -866,6 +905,12 @@ async function buscarProdutoInterno(
     url:
       melhor.link
   });
+
+  console.log("========== DEBUG JAÚ SERVE: PRODUTO CRIADO ==========");
+  console.dir(produtoCriado, { depth: 8 });
+  console.log("======================================================");
+
+  return produtoCriado;
 }
 
 async function buscarProduto(
