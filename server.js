@@ -1,104 +1,200 @@
-require(“dotenv”).config();
+require("dotenv").config();
 
-const express = require(“express”); const cors = require(“cors”);
+const express = require("express");
+const cors = require("cors");
 
-const { limparNomeBusca } = require(“./utils/texto”);
+const {
+  limparNomeBusca
+} = require("./utils/texto");
 
-const { buscarProduto: buscarSavegnago } =
-require(“./supermercados/savegnago”);
+const {
+  buscarProduto: buscarSavegnago
+} = require("./supermercados/savegnago");
 
-const { buscarProduto: buscarJauServe } =
-require(“./supermercados/jauserve”);
+const {
+  buscarProduto: buscarJauServe
+} = require("./supermercados/jauserve");
 
-const { buscarProduto: buscarTonin } = require(“./supermercados/tonin”);
+const {
+  buscarProduto: buscarTonin
+} = require("./supermercados/tonin");
 
 const app = express();
 
-/ CONFIGURAÇÕES */
+/*
+ * CONFIGURAÇÕES
+ */
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT =
+  Number(process.env.PORT) || 3000;
 
-const LIMITE_PRODUTOS_LOTE = Number( process.env.LIMITE_PRODUTOS_LOTE )
-|| 100;
+const LIMITE_PRODUTOS_LOTE =
+  Number(
+    process.env.LIMITE_PRODUTOS_LOTE
+  ) || 100;
 
-const CONCORRENCIA_PRODUTOS = Number( process.env.CONCORRENCIA_PRODUTOS
-) || 3;
+const CONCORRENCIA_PRODUTOS =
+  Number(
+    process.env.CONCORRENCIA_PRODUTOS
+  ) || 3;
 
-const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS) || 10 * 60 * 1000;
+const CACHE_TTL_MS =
+  Number(process.env.CACHE_TTL_MS) ||
+  10 * 60 * 1000;
 
-const TONIN_ENABLED = String( process.env.TONIN_ENABLED || “false”
-).toLowerCase() === “true”;
+const TONIN_ENABLED =
+  String(
+    process.env.TONIN_ENABLED || "false"
+  ).toLowerCase() === "true";
 
-/ MIDDLEWARES */
+/*
+ * MIDDLEWARES
+ */
 
-app.use(cors()); app.options(“*“, cors());
+app.use(cors());
+app.options("*", cors());
 
-app.use( express.json({ limit: “5mb” }) );
+app.use(
+  express.json({
+    limit: "5mb"
+  })
+);
 
-/ CACHE EM MEMÓRIA */
+/*
+ * CACHE EM MEMÓRIA
+ */
 
 const cacheConsultas = new Map();
 
-function gerarChaveCache( termoBusca, eanBuscado ) { return [
-limparNomeBusca(termoBusca || ““), String(eanBuscado ||”“).trim()
-].join(“|”); }
+function gerarChaveCache(
+  termoBusca,
+  eanBuscado
+) {
+  return [
+    limparNomeBusca(termoBusca || ""),
+    String(eanBuscado || "").trim()
+  ].join("|");
+}
 
-function obterDoCache(chave) { const registro =
-cacheConsultas.get(chave);
+function obterDoCache(chave) {
+  const registro =
+    cacheConsultas.get(chave);
 
-if (!registro) { return null; }
+  if (!registro) {
+    return null;
+  }
 
-const expirou = Date.now() - registro.criadoEm > CACHE_TTL_MS;
+  const expirou =
+    Date.now() - registro.criadoEm >
+    CACHE_TTL_MS;
 
-if (expirou) { cacheConsultas.delete(chave); return null; }
+  if (expirou) {
+    cacheConsultas.delete(chave);
+    return null;
+  }
 
-return registro.resultados; }
+  return registro.resultados;
+}
 
-function salvarNoCache( chave, resultados ) { cacheConsultas.set(chave,
-{ criadoEm: Date.now(), resultados }); }
+function salvarNoCache(
+  chave,
+  resultados
+) {
+  cacheConsultas.set(chave, {
+    criadoEm: Date.now(),
+    resultados
+  });
+}
 
-function limparCacheExpirado() { const agora = Date.now();
+function limparCacheExpirado() {
+  const agora = Date.now();
 
-for ( const [chave, registro] of cacheConsultas.entries() ) { const
-expirou = agora - registro.criadoEm > CACHE_TTL_MS;
+  for (
+    const [chave, registro]
+    of cacheConsultas.entries()
+  ) {
+    const expirou =
+      agora - registro.criadoEm >
+      CACHE_TTL_MS;
 
     if (expirou) {
       cacheConsultas.delete(chave);
     }
+  }
+}
 
-} }
-
-const intervaloLimpezaCache = setInterval( limparCacheExpirado, 5 * 60 *
-1000 );
+const intervaloLimpezaCache =
+  setInterval(
+    limparCacheExpirado,
+    5 * 60 * 1000
+  );
 
 intervaloLimpezaCache.unref();
 
-/ SUPERMERCADOS */
+/*
+ * SUPERMERCADOS
+ */
 
-function obterSupermercadosAtivos() { const supermercados = [ { id:
-“savegnago”, buscarProduto: buscarSavegnago }, { id: “jauserve”,
-buscarProduto: buscarJauServe } ];
+function obterSupermercadosAtivos() {
+  const supermercados = [
+    {
+      id: "savegnago",
+      buscarProduto: buscarSavegnago
+    },
+    {
+      id: "jauserve",
+      buscarProduto: buscarJauServe
+    }
+  ];
 
-if (TONIN_ENABLED) { supermercados.push({ id: “tonin”, buscarProduto:
-buscarTonin }); }
+  if (TONIN_ENABLED) {
+    supermercados.push({
+      id: "tonin",
+      buscarProduto: buscarTonin
+    });
+  }
 
-return supermercados; }
+  return supermercados;
+}
 
-/ NORMALIZAÇÃO DOS PRODUTOS RECEBIDOS */
+/*
+ * NORMALIZAÇÃO DOS PRODUTOS RECEBIDOS
+ */
 
-function normalizarProdutoRecebido( produto, indice ) { if ( !produto ||
-typeof produto !== “object” ) { return null; }
+function normalizarProdutoRecebido(
+  produto,
+  indice
+) {
+  if (
+    !produto ||
+    typeof produto !== "object"
+  ) {
+    return null;
+  }
 
-const nome = produto.nome || produto.name || produto.productName || ““;
+  const nome =
+    produto.nome ||
+    produto.name ||
+    produto.productName ||
+    "";
 
-const ean = produto.ean || produto.barcode || produto.codigoBarras ||
-““;
+  const ean =
+    produto.ean ||
+    produto.barcode ||
+    produto.codigoBarras ||
+    "";
 
-const termoBusca = String(nome || ean) .replace(/+/g, ” “) .trim();
+  const termoBusca =
+    String(nome || ean)
+      .replace(/\s+/g, " ")
+      .trim();
 
-if (!termoBusca) { return null; }
+  if (!termoBusca) {
+    return null;
+  }
 
-return { indice,
+  return {
+    indice,
 
     id:
       produto.id ||
@@ -123,41 +219,84 @@ return { indice,
       1,
 
     original: produto
+  };
+}
 
-}; }
+/*
+ * LOGS DE DIAGNÓSTICO
+ */
 
-/ LOGS DE DIAGNÓSTICO */
+function criarIdentificadorConsulta(
+  termoBusca,
+  eanBuscado
+) {
+  const ean =
+    eanBuscado
+      ? ` | EAN: ${eanBuscado}`
+      : "";
 
-function criarIdentificadorConsulta( termoBusca, eanBuscado ) { const
-ean = eanBuscado ? | EAN: ${eanBuscado} : ““;
+  return `${termoBusca}${ean}`;
+}
 
-return ${termoBusca}${ean}; }
+function registrarMemoria(prefixo) {
+  const memoria =
+    process.memoryUsage();
 
-function registrarMemoria(prefixo) { const memoria =
-process.memoryUsage();
+  const paraMB = (valor) =>
+    `${Math.round(valor / 1024 / 1024)} MB`;
 
-const paraMB = (valor) => ${Math.round(valor / 1024 / 1024)} MB;
+  console.log(
+    `${prefixo} | MEMÓRIA:`,
+    {
+      rss: paraMB(memoria.rss),
+      heapTotal: paraMB(memoria.heapTotal),
+      heapUsed: paraMB(memoria.heapUsed),
+      external: paraMB(memoria.external)
+    }
+  );
+}
 
-console.log( ${prefixo} | MEMÓRIA:, { rss: paraMB(memoria.rss),
-heapTotal: paraMB(memoria.heapTotal), heapUsed:
-paraMB(memoria.heapUsed), external: paraMB(memoria.external) } ); }
+/*
+ * CONSULTA NOS SUPERMERCADOS
+ */
 
-/ CONSULTA NOS SUPERMERCADOS */
+async function buscarEmTodosMercados(
+  termoBusca,
+  eanBuscado
+) {
+  const identificador =
+    criarIdentificadorConsulta(
+      termoBusca,
+      eanBuscado
+    );
 
-async function buscarEmTodosMercados( termoBusca, eanBuscado ) { const
-identificador = criarIdentificadorConsulta( termoBusca, eanBuscado );
+  const inicioConsulta =
+    Date.now();
 
-const inicioConsulta = Date.now();
+  console.log(
+    "=================================================="
+  );
+  console.log(
+    "BUSCA MULTIMERCADOS INICIADA:",
+    identificador
+  );
+  registrarMemoria(
+    "INÍCIO DA BUSCA MULTIMERCADOS"
+  );
 
-console.log( “==================================================” );
-console.log( “BUSCA MULTIMERCADOS INICIADA:”, identificador );
-registrarMemoria( “INÍCIO DA BUSCA MULTIMERCADOS” );
+  const chaveCache =
+    gerarChaveCache(
+      termoBusca,
+      eanBuscado
+    );
 
-const chaveCache = gerarChaveCache( termoBusca, eanBuscado );
+  const cache =
+    obterDoCache(chaveCache);
 
-const cache = obterDoCache(chaveCache);
-
-if (cache) { console.log( CACHE ENCONTRADO: ${identificador} );
+  if (cache) {
+    console.log(
+      `CACHE ENCONTRADO: ${identificador}`
+    );
 
     console.log(
       "RESULTADOS DO CACHE:",
@@ -173,16 +312,26 @@ if (cache) { console.log( CACHE ENCONTRADO: ${identificador} );
     );
 
     return cache;
+  }
 
-}
+  const supermercados =
+    obterSupermercadosAtivos();
 
-const supermercados = obterSupermercadosAtivos();
+  console.log(
+    "SUPERMERCADOS ATIVOS:",
+    supermercados
+      .map(
+        (supermercado) =>
+          supermercado.id
+      )
+      .join(", ")
+  );
 
-console.log( “SUPERMERCADOS ATIVOS:”, supermercados .map( (supermercado)
-=> supermercado.id ) .join(“,”) );
-
-const consultas = supermercados.map( async (supermercado) => { const
-inicioSupermercado = Date.now();
+  const consultas =
+    supermercados.map(
+      async (supermercado) => {
+        const inicioSupermercado =
+          Date.now();
 
         console.log(
           "--------------------------------------------------"
@@ -281,14 +430,26 @@ inicioSupermercado = Date.now();
       }
     );
 
-console.log( “AGUARDANDO TODAS AS CONSULTAS COM Promise.allSettled…” );
+  console.log(
+    "AGUARDANDO TODAS AS CONSULTAS COM Promise.allSettled..."
+  );
 
-const respostas = await Promise.allSettled( consultas );
+  const respostas =
+    await Promise.allSettled(
+      consultas
+    );
 
-console.log( “TODAS AS CONSULTAS FORAM ENCERRADAS.” );
+  console.log(
+    "TODAS AS CONSULTAS FORAM ENCERRADAS."
+  );
 
-console.log( “RESUMO DAS PROMISES:”, respostas.map( (resposta, indice)
-=> ({ supermercado: supermercados[indice]?.id || indice-${indice},
+  console.log(
+    "RESUMO DAS PROMISES:",
+    respostas.map(
+      (resposta, indice) => ({
+        supermercado:
+          supermercados[indice]?.id ||
+          `indice-${indice}`,
 
         status:
           resposta.status,
@@ -307,47 +468,88 @@ console.log( “RESUMO DAS PROMISES:”, respostas.map( (resposta, indice)
             : false
       })
     )
+  );
 
-);
+  const resultados = respostas
+    .filter(
+      (resposta) =>
+        resposta.status === "fulfilled" &&
+        resposta.value?.resultado
+    )
+    .map(
+      (resposta) =>
+        resposta.value.resultado
+    );
 
-const resultados = respostas .filter( (resposta) => resposta.status ===
-“fulfilled” && resposta.value?.resultado ) .map( (resposta) =>
-resposta.value.resultado );
+  /*
+   * Só guardamos no cache quando algum
+   * supermercado encontrou o produto.
+   */
 
-/ Só guardamos no cache quando algum * supermercado encontrou o produto.
-*/
-
-if (resultados.length > 0) { salvarNoCache( chaveCache, resultados );
+  if (resultados.length > 0) {
+    salvarNoCache(
+      chaveCache,
+      resultados
+    );
 
     console.log(
       "RESULTADOS SALVOS NO CACHE:",
       resultados.length
     );
+  } else {
+    console.log(
+      "NENHUM RESULTADO FOI SALVO NO CACHE."
+    );
+  }
 
-} else { console.log( “NENHUM RESULTADO FOI SALVO NO CACHE.” ); }
+  const duracaoConsulta =
+    Date.now() -
+    inicioConsulta;
 
-const duracaoConsulta = Date.now() - inicioConsulta;
+  console.log(
+    "BUSCA MULTIMERCADOS FINALIZADA:",
+    identificador
+  );
 
-console.log( “BUSCA MULTIMERCADOS FINALIZADA:”, identificador );
+  console.log(
+    "TOTAL DE RESULTADOS:",
+    resultados.length
+  );
 
-console.log( “TOTAL DE RESULTADOS:”, resultados.length );
+  console.log(
+    "TEMPO DA BUSCA MULTIMERCADOS:",
+    `${duracaoConsulta} ms`
+  );
 
-console.log( “TEMPO DA BUSCA MULTIMERCADOS:”, ${duracaoConsulta} ms );
+  registrarMemoria(
+    "FIM DA BUSCA MULTIMERCADOS"
+  );
 
-registrarMemoria( “FIM DA BUSCA MULTIMERCADOS” );
+  console.log(
+    "=================================================="
+  );
 
-console.log( “==================================================” );
+  return resultados;
+}
 
-return resultados; }
+/*
+ * FORMATAÇÃO PARA O LOVABLE
+ */
 
-/ FORMATAÇÃO PARA O LOVABLE */
+function formatarResultadoBatch(
+  produtoRecebido,
+  resultado
+) {
+  const price =
+    Number(resultado.price);
 
-function formatarResultadoBatch( produtoRecebido, resultado ) { const
-price = Number(resultado.price);
+  const listPrice =
+    Number(resultado.listPrice);
 
-const listPrice = Number(resultado.listPrice);
-
-return { / EAN original enviado pelo Lovable. */
+  return {
+    /*
+     * EAN original enviado pelo Lovable.
+     */
 
     ean:
       produtoRecebido.ean ||
@@ -422,19 +624,33 @@ return { / EAN original enviado pelo Lovable. */
 
     quantity:
       produtoRecebido.quantidade
+  };
+}
 
-}; }
+/*
+ * CONTROLE DE CONCORRÊNCIA
+ *
+ * Evita abrir dezenas de pesquisas ao
+ * mesmo tempo e sobrecarregar o Jaú Serve,
+ * o computador ou o Render.
+ */
 
-/ CONTROLE DE CONCORRÊNCIA Evita abrir dezenas de pesquisas ao * mesmo
-tempo e sobrecarregar o Jaú Serve, * o computador ou o Render. */
+async function processarComLimite(
+  itens,
+  limite,
+  processador
+) {
+  const resultados =
+    new Array(itens.length);
 
-async function processarComLimite( itens, limite, processador ) { const
-resultados = new Array(itens.length);
+  let proximoIndice = 0;
 
-let proximoIndice = 0;
-
-async function trabalhador( numeroTrabalhador ) { console.log(
-[TRABALHADOR ${numeroTrabalhador}] INICIADO );
+  async function trabalhador(
+    numeroTrabalhador
+  ) {
+    console.log(
+      `[TRABALHADOR ${numeroTrabalhador}] INICIADO`
+    );
 
     while (true) {
       const indiceAtual =
@@ -478,29 +694,54 @@ async function trabalhador( numeroTrabalhador ) { console.log(
         resultados[indiceAtual] = [];
       }
     }
+  }
 
+  const totalTrabalhadores =
+    Math.min(
+      Math.max(1, limite),
+      itens.length
+    );
+
+  console.log(
+    "TOTAL DE TRABALHADORES:",
+    totalTrabalhadores
+  );
+
+  const trabalhadores =
+    Array.from(
+      {
+        length:
+          totalTrabalhadores
+      },
+      (_, indice) =>
+        trabalhador(indice + 1)
+    );
+
+  await Promise.allSettled(
+    trabalhadores
+  );
+
+  console.log(
+    "TODOS OS TRABALHADORES FORAM ENCERRADOS."
+  );
+
+  return resultados;
 }
 
-const totalTrabalhadores = Math.min( Math.max(1, limite), itens.length
-);
+/*
+ * ROTAS
+ */
 
-console.log( “TOTAL DE TRABALHADORES:”, totalTrabalhadores );
+app.get("/", (req, res) => {
+  res.send(
+    "Servidor DALE online 🚀"
+  );
+});
 
-const trabalhadores = Array.from( { length: totalTrabalhadores }, (_,
-indice) => trabalhador(indice + 1) );
-
-await Promise.allSettled( trabalhadores );
-
-console.log( “TODOS OS TRABALHADORES FORAM ENCERRADOS.” );
-
-return resultados; }
-
-/ ROTAS */
-
-app.get(“/”, (req, res) => { res.send( “Servidor DALE online 🚀” ); });
-
-app.get(“/health”, (req, res) => { return res.json({ online: true,
-service: “dale-precos-api”,
+app.get("/health", (req, res) => {
+  return res.json({
+    online: true,
+    service: "dale-precos-api",
 
     supermarkets:
       obterSupermercadosAtivos()
@@ -514,12 +755,18 @@ service: “dale-precos-api”,
 
     date:
       new Date().toISOString()
+  });
+});
 
-}); });
+/*
+ * TESTE DE UM PRODUTO
+ */
 
-/ TESTE DE UM PRODUTO */
-
-app.get( “/buscar”, async (req, res) => { const inicio = Date.now();
+app.get(
+  "/buscar",
+  async (req, res) => {
+    const inicio =
+      Date.now();
 
     const produto =
       req.query.q;
@@ -619,13 +866,18 @@ app.get( “/buscar”, async (req, res) => { const inicio = Date.now();
             String(erro)
         });
     }
+  }
+);
 
-} );
+/*
+ * BUSCA DE VÁRIOS PRODUTOS
+ */
 
-/ BUSCA DE VÁRIOS PRODUTOS */
-
-app.post( “/prices/batch”, async (req, res) => { const inicio =
-Date.now();
+app.post(
+  "/prices/batch",
+  async (req, res) => {
+    const inicio =
+      Date.now();
 
     const identificadorRequisicao =
       `${inicio}-${Math.random()
@@ -913,13 +1165,18 @@ Date.now();
         .status(500)
         .json([]);
     }
+  }
+);
 
-} );
+/*
+ * LIMPEZA MANUAL DO CACHE
+ */
 
-/ LIMPEZA MANUAL DO CACHE */
-
-app.delete( “/cache”, (req, res) => { const quantidade =
-cacheConsultas.size;
+app.delete(
+  "/cache",
+  (req, res) => {
+    const quantidade =
+      cacheConsultas.size;
 
     cacheConsultas.clear();
 
@@ -929,13 +1186,19 @@ cacheConsultas.size;
       removidos:
         quantidade
     });
+  }
+);
 
-} );
+/*
+ * DIAGNÓSTICO DO PROCESSO
+ */
 
-/ DIAGNÓSTICO DO PROCESSO */
-
-process.on( “uncaughtException”, (erro) => { console.error( “==========
-UNCAUGHT EXCEPTION ==========” );
+process.on(
+  "uncaughtException",
+  (erro) => {
+    console.error(
+      "========== UNCAUGHT EXCEPTION =========="
+    );
 
     console.error(erro);
 
@@ -946,11 +1209,15 @@ UNCAUGHT EXCEPTION ==========” );
     console.error(
       "========================================"
     );
+  }
+);
 
-} );
-
-process.on( “unhandledRejection”, (motivo) => { console.error(
-“========== UNHANDLED REJECTION ==========” );
+process.on(
+  "unhandledRejection",
+  (motivo) => {
+    console.error(
+      "========== UNHANDLED REJECTION =========="
+    );
 
     console.error(motivo);
 
@@ -961,11 +1228,15 @@ process.on( “unhandledRejection”, (motivo) => { console.error(
     console.error(
       "========================================="
     );
+  }
+);
 
-} );
-
-process.once( “SIGTERM”, () => { console.log( “========== PROCESSO
-RECEBEU SIGTERM ==========” );
+process.once(
+  "SIGTERM",
+  () => {
+    console.log(
+      "========== PROCESSO RECEBEU SIGTERM =========="
+    );
 
     registrarMemoria(
       "SIGTERM"
@@ -978,11 +1249,15 @@ RECEBEU SIGTERM ==========” );
     console.log(
       "=============================================="
     );
+  }
+);
 
-} );
-
-process.once( “SIGINT”, () => { console.log( “========== PROCESSO
-RECEBEU SIGINT ==========” );
+process.once(
+  "SIGINT",
+  () => {
+    console.log(
+      "========== PROCESSO RECEBEU SIGINT =========="
+    );
 
     registrarMemoria(
       "SIGINT"
@@ -991,11 +1266,15 @@ RECEBEU SIGINT ==========” );
     console.log(
       "============================================="
     );
+  }
+);
 
-} );
-
-process.once( “exit”, (codigo) => { console.log( “========== PROCESSO
-NODE ENCERRADO ==========” );
+process.once(
+  "exit",
+  (codigo) => {
+    console.log(
+      "========== PROCESSO NODE ENCERRADO =========="
+    );
 
     console.log(
       "Código de saída:",
@@ -1005,13 +1284,19 @@ NODE ENCERRADO ==========” );
     console.log(
       "============================================"
     );
+  }
+);
 
-} );
+/*
+ * INICIALIZAÇÃO
+ */
 
-/ INICIALIZAÇÃO */
-
-app.listen( PORT, () => { console.log(
-Servidor rodando na porta ${PORT} 🚀 );
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `Servidor rodando na porta ${PORT} 🚀`
+    );
 
     console.log(
       "Supermercados ativos:",
@@ -1041,5 +1326,5 @@ Servidor rodando na porta ${PORT} 🚀 );
     registrarMemoria(
       "INICIALIZAÇÃO DO SERVIDOR"
     );
-
-} );
+  }
+);
