@@ -460,7 +460,18 @@ async function prepararSessao() {
 }
 
 async function consultarSugestoes(termo) {
+  console.log("JAÚ SERVE PASSO 1 - antes de prepararSessao:", termo);
   await prepararSessao();
+  console.log("JAÚ SERVE PASSO 2 - prepararSessao terminou:", termo);
+  console.log("JAÚ SERVE PASSO 3 - estado da sessão:", {
+    browserExiste:Boolean(browser),
+    browserConectado:Boolean(browser&&browser.isConnected()),
+    contextoExiste:Boolean(contexto),
+    paginaExiste:Boolean(pagina),
+    paginaFechada:pagina?pagina.isClosed():null,
+    sessaoPreparada
+  });
+  console.log("JAÚ SERVE PASSO 4 - antes do pagina.evaluate:", termo);
 
   const resultado = await pagina.evaluate(
     async ({ endpoint, termoBusca }) => {
