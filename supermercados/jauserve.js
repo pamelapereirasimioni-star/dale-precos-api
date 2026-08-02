@@ -1,18 +1,9 @@
 /*
- * JAÚ SERVE — PERFORMANCE + CONTROLE DE MEMÓRIA
- *
- * Objetivos desta versão:
- * 1. Manter apenas um Chromium ativo por vez.
- * 2. Serializar todas as pesquisas do Jaú Serve.
- * 3. Bloquear imagens, fontes e mídia no navegador.
- * 4. Usar BrowserContext.request nas consultas de produtos, evitando
- *    executar fetch dentro da página para cada item.
- * 5. Reciclar o Chromium após algumas pesquisas para impedir crescimento
- *    progressivo de memória na instância de 512 MB do Render.
- * 6. Fechar automaticamente a sessão após período de inatividade.
- * 7. Evitar logs gigantes com HTML e objetos completos.
+ * IMPORTANTE PARA O RENDER:
+ * Mantém os navegadores do Playwright dentro do projeto (node_modules),
+ * para que sejam enviados junto com o build e continuem disponíveis
+ * quando o serviço entrar em execução.
  */
-
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = "0";
 }
@@ -23,164 +14,55 @@ const cheerio = require("cheerio");
 const { calcularPontuacao } = require("../core/score");
 const { escolherMelhorProduto } = require("../core/escolhedor");
 const { criarProduto } = require("../core/produto");
+const { gerarTermosBusca } = require("../utils/termosBusca");
 
 const BASE_URL = "https://www.jauserve.com.br";
 
 const HOME_URL =
   `${BASE_URL}/on/demandware.store/` +
-  "Sites-JauServe-Site/pt_BR/Home-Show";
+  `Sites-JauServe-Site/pt_BR/Home-Show`;
 
 const SUGGESTIONS_URL =
   `${BASE_URL}/on/demandware.store/` +
-  "Sites-JauServe-Site/pt_BR/SearchServices-GetSuggestions";
+  `Sites-JauServe-Site/pt_BR/SearchServices-GetSuggestions`;
 
-const CIDADE = process.env.JAUSERVE_CIDADE || "Ribeirão Preto";
-
-/*
- * Em uma instância de 512 MB, reciclar o navegador frequentemente é mais
- * seguro. O valor padrão 2 permite reaproveitamento dentro do lote sem
- * manter o Chromium crescendo durante listas grandes.
- */
-const MAX_PESQUISAS_POR_SESSAO = Math.max(
-  1,
-  Number(process.env.JAUSERVE_MAX_PESQUISAS_SESSAO || 2)
-);
-
-const TEMPO_FECHAMENTO_OCIOSO_MS = Math.max(
-  5000,
-  Number(process.env.JAUSERVE_IDLE_TIMEOUT_MS || 30000)
-);
-
-const TIMEOUT_NAVEGACAO_MS = Math.max(
-  15000,
-  Number(process.env.JAUSERVE_NAVIGATION_TIMEOUT_MS || 45000)
-);
-
-const TIMEOUT_REQUISICAO_MS = Math.max(
-  8000,
-  Number(process.env.JAUSERVE_REQUEST_TIMEOUT_MS || 20000)
-);
+const CIDADE =
+  process.env.JAUSERVE_CIDADE || "Ribeirão Preto";
 
 let browser = null;
 let contexto = null;
 let pagina = null;
 let sessaoPreparada = false;
-let pesquisasNaSessao = 0;
-let temporizadorOcioso = null;
-let fechandoSessao = null;
 
-/*
- * Garante uma única pesquisa do Jaú Serve por vez. Isso evita que múltiplos
- * produtos tentem usar a mesma página/contexto simultaneamente e reduz o pico
- * de memória do Chromium.
- */
 let filaPesquisas = Promise.resolve();
 
 function executarExclusivo(tarefa) {
   const execucao = filaPesquisas.then(tarefa, tarefa);
+
   filaPesquisas = execucao.catch(() => {});
+
   return execucao;
 }
 
-function normalizarInteiro(valor, fallback) {
-  const numero = Number(valor);
-  return Number.isFinite(numero) ? Math.trunc(numero) : fallback;
-}
 
-function prepararTermosBusca(termoBusca) {
-  const original = String(termoBusca || "")
-    .replace(/\s+/g, " ")
-    .trim();
+async function fecharSessao() {
+  sessaoPreparada = false;
 
-  const semQuantidade = original
-    .replace(
-      /\b\d+(?:[.,]\d+)?\s*(kg|g|mg|ml|l|un|und|unidade|unidades)\b/gi,
-      ""
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return [...new Set([original, semQuantidade].filter(Boolean))];
-}
-
-function cancelarFechamentoOcioso() {
-  if (temporizadorOcioso) {
-    clearTimeout(temporizadorOcioso);
-    temporizadorOcioso = null;
-  }
-}
-
-function agendarFechamentoOcioso() {
-  cancelarFechamentoOcioso();
-
-  temporizadorOcioso = setTimeout(() => {
-    executarExclusivo(async () => {
-      console.log(
-        `Jaú Serve: sessão ociosa por ${TEMPO_FECHAMENTO_OCIOSO_MS} ms; fechando Chromium.`
-      );
-      await fecharSessao("ociosidade");
-    }).catch((erro) => {
-      console.error(
-        "Jaú Serve: falha ao fechar sessão ociosa:",
-        erro.message
-      );
-    });
-  }, TEMPO_FECHAMENTO_OCIOSO_MS);
-
-  temporizadorOcioso.unref?.();
-}
-
-function sessaoEstaValida() {
-  return Boolean(
-    sessaoPreparada &&
-      browser &&
-      browser.isConnected() &&
-      contexto &&
-      pagina &&
-      !pagina.isClosed()
-  );
-}
-
-async function fecharSessao(motivo = "solicitação") {
-  cancelarFechamentoOcioso();
-
-  if (fechandoSessao) {
-    await fechandoSessao;
-    return;
+  if (pagina) {
+    await pagina.close().catch(() => {});
   }
 
-  fechandoSessao = (async () => {
-    sessaoPreparada = false;
-    pesquisasNaSessao = 0;
-
-    const paginaAtual = pagina;
-    const contextoAtual = contexto;
-    const browserAtual = browser;
-
-    pagina = null;
-    contexto = null;
-    browser = null;
-
-    if (paginaAtual && !paginaAtual.isClosed()) {
-      await paginaAtual.close({ runBeforeUnload: false }).catch(() => {});
-    }
-
-    if (contextoAtual) {
-      await contextoAtual.close().catch(() => {});
-    }
-
-    if (browserAtual) {
-      await browserAtual.close().catch(() => {});
-    }
-
-    console.log(`Jaú Serve: sessão encerrada (${motivo}).`);
-  })();
-
-  try {
-    await fechandoSessao;
-  } finally {
-    fechandoSessao = null;
+  if (contexto) {
+    await contexto.close().catch(() => {});
   }
+
+  if (browser) {
+    await browser.close().catch(() => {});
+  }
+
+  pagina = null;
+  contexto = null;
+  browser = null;
 }
 
 async function iniciarSessao() {
@@ -194,103 +76,69 @@ async function iniciarSessao() {
     return;
   }
 
-  await fecharSessao("reinicialização preventiva");
+  await fecharSessao();
+
+  console.log("========== DEBUG PLAYWRIGHT JAÚ SERVE ==========");
+  console.log("Versão do Node:", process.version);
+  console.log("PLAYWRIGHT_BROWSERS_PATH:", process.env.PLAYWRIGHT_BROWSERS_PATH || "não definida");
+  console.log("HOME:", process.env.HOME || "não definido");
+  console.log("Chromium executablePath esperado:", chromium.executablePath());
+  console.log("================================================");
 
   const executablePath = chromium.executablePath();
 
-  console.log("Jaú Serve: iniciando Chromium otimizado.");
-  console.log("Jaú Serve: executável Chromium:", executablePath);
+  console.log(
+    "Executável Chromium escolhido:",
+    executablePath
+  );
 
   browser = await chromium.launch({
     executablePath,
     headless: true,
     args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
       "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-breakpad",
-      "--disable-component-extensions-with-background-pages",
-      "--disable-default-apps",
-      "--disable-features=Translate,BackForwardCache,MediaRouter,OptimizationHints",
-      "--disable-hang-monitor",
-      "--disable-ipc-flooding-protection",
-      "--disable-popup-blocking",
-      "--disable-prompt-on-repost",
-      "--disable-renderer-backgrounding",
-      "--disable-sync",
-      "--hide-scrollbars",
-      "--metrics-recording-only",
-      "--mute-audio",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--password-store=basic",
-      "--use-mock-keychain"
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
     ]
-  });
-
-  browser.once("disconnected", () => {
-    sessaoPreparada = false;
-    browser = null;
-    contexto = null;
-    pagina = null;
-    pesquisasNaSessao = 0;
-    console.log("Jaú Serve: Chromium foi desconectado.");
   });
 
   contexto = await browser.newContext({
     locale: "pt-BR",
-    serviceWorkers: "block",
+
     viewport: {
-      width: 1280,
-      height: 720
+      width: 1366,
+      height: 900
     },
+
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
       "AppleWebKit/537.36 (KHTML, like Gecko) " +
       "Chrome/150.0.0.0 Safari/537.36",
+
     extraHTTPHeaders: {
       Accept:
         "text/html,application/xhtml+xml,application/xml;" +
         "q=0.9,image/avif,image/webp,*/*;q=0.8",
-      "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+
+      "Accept-Language":
+        "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
     }
-  });
-
-  /*
-   * Imagens, fontes e mídia não são necessárias para selecionar a loja nem
-   * consultar o HTML de sugestões. Bloqueá-las reduz tempo e RAM.
-   */
-  await contexto.route("**/*", async (route) => {
-    const tipo = route.request().resourceType();
-
-    if (["image", "font", "media"].includes(tipo)) {
-      await route.abort().catch(() => {});
-      return;
-    }
-
-    await route.continue().catch(() => {});
   });
 
   pagina = await contexto.newPage();
-  pagina.setDefaultTimeout(15000);
-  pagina.setDefaultNavigationTimeout(TIMEOUT_NAVEGACAO_MS);
+
+  pagina.setDefaultTimeout(20000);
+  pagina.setDefaultNavigationTimeout(60000);
 
   pagina.on("pageerror", (erro) => {
-    console.log("Jaú Serve: erro interno da página:", erro.message);
-  });
-
-  pagina.on("crash", () => {
-    sessaoPreparada = false;
-    console.error("Jaú Serve: a página do Chromium sofreu crash.");
+    console.log(
+      "Erro da página Jaú Serve:",
+      erro.message
+    );
   });
 
   sessaoPreparada = false;
-  pesquisasNaSessao = 0;
 }
 
 async function abrirHome() {
@@ -300,7 +148,7 @@ async function abrirHome() {
     try {
       await pagina.goto(HOME_URL, {
         waitUntil: "domcontentloaded",
-        timeout: TIMEOUT_NAVEGACAO_MS
+        timeout: 60000
       });
 
       return;
@@ -314,19 +162,25 @@ async function abrirHome() {
         throw erro;
       }
 
-      await fecharSessao("falha ao abrir a home");
+      await fecharSessao();
       await iniciarSessao();
     }
   }
 }
 
 async function abrirPopupLoja() {
+  await pagina.waitForTimeout(500);
+
   const popup = pagina.locator("#popUpCep").first();
 
-  await popup.waitFor({
-    state: "attached",
-    timeout: 15000
-  });
+  const existe = await popup
+    .count()
+    .then((total) => total > 0)
+    .catch(() => false);
+
+  if (!existe) {
+    throw new Error("Popup #popUpCep não foi encontrado");
+  }
 
   await pagina.evaluate(() => {
     if (window.jQuery) {
@@ -334,6 +188,8 @@ async function abrirPopupLoja() {
       window.jQuery("#popUpCep").modal("show");
     }
   });
+
+  await pagina.waitForTimeout(500);
 }
 
 async function carregarCidades() {
@@ -343,12 +199,14 @@ async function carregarCidades() {
 
   await seletorCidade.waitFor({
     state: "attached",
-    timeout: 15000
+    timeout: 20000
   });
 
   await pagina.waitForFunction(
     (cidade) => {
-      const select = document.querySelector("#popUpCep #storesCities");
+      const select = document.querySelector(
+        "#popUpCep #storesCities"
+      );
 
       if (!select) {
         return false;
@@ -362,7 +220,9 @@ async function carregarCidades() {
       );
     },
     CIDADE,
-    { timeout: 15000 }
+    {
+      timeout: 20000
+    }
   );
 
   return seletorCidade;
@@ -371,7 +231,13 @@ async function carregarCidades() {
 async function selecionarCidade() {
   const seletorCidade = await carregarCidades();
 
-  await seletorCidade.selectOption({ label: CIDADE });
+  await seletorCidade.selectOption({
+    label: CIDADE
+  });
+
+  console.log(
+    `Jaú Serve: cidade selecionada — ${CIDADE}.`
+  );
 
   const radiosLojas = pagina.locator(
     '#popUpCep [name="popUpCep__storeInput"]'
@@ -379,17 +245,19 @@ async function selecionarCidade() {
 
   await radiosLojas.first().waitFor({
     state: "attached",
-    timeout: 15000
+    timeout: 20000
   });
 
   const total = await radiosLojas.count();
 
   if (total === 0) {
-    throw new Error(`Nenhuma loja encontrada em ${CIDADE}`);
+    throw new Error(
+      `Nenhuma loja encontrada em ${CIDADE}`
+    );
   }
 
   console.log(
-    `Jaú Serve: cidade ${CIDADE}; ${total} loja(s) encontrada(s).`
+    `Jaú Serve: ${total} loja(s) encontrada(s).`
   );
 
   return radiosLojas;
@@ -397,75 +265,126 @@ async function selecionarCidade() {
 
 async function registrarPrimeiraLoja(radiosLojas) {
   const primeiraLoja = radiosLojas.first();
+
   const valor = await primeiraLoja.getAttribute("value");
   const dataUrl = await primeiraLoja.getAttribute("data-url");
 
   if (!valor) {
-    throw new Error("O valor da primeira loja não foi encontrado");
+    throw new Error(
+      "O valor da primeira loja não foi encontrado"
+    );
   }
 
   if (!dataUrl) {
-    throw new Error("O endereço data-url da primeira loja não foi encontrado");
+    throw new Error(
+      "O endereço data-url da primeira loja não foi encontrado"
+    );
   }
+
+  console.log(
+    "Jaú Serve: registrando a primeira loja. Valor:",
+    valor
+  );
 
   const resultado = await pagina.evaluate(
     async ({ valorLoja, enderecoLoja }) => {
       try {
-        const urlLoja = new URL(enderecoLoja, window.location.origin);
-        urlLoja.searchParams.set("postcode", valorLoja);
+        const urlLoja = new URL(
+          enderecoLoja,
+          window.location.origin
+        );
 
-        const respostaLoja = await fetch(urlLoja.toString(), {
-          method: "GET",
-          credentials: "include",
-          headers: {
-            Accept: "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest"
+        urlLoja.searchParams.set(
+          "postcode",
+          valorLoja
+        );
+
+        const respostaLoja = await fetch(
+          urlLoja.toString(),
+          {
+            method: "GET",
+            credentials: "include",
+            headers: {
+              Accept: "application/json, text/javascript, */*; q=0.01",
+              "X-Requested-With": "XMLHttpRequest"
+            }
           }
-        });
+        );
 
-        /*
-         * O corpo completo desta resposta não é mantido. Antes ele era
-         * armazenado e impresso, aumentando desnecessariamente memória e logs.
-         */
-        await respostaLoja.text();
+        const textoLoja = await respostaLoja.text();
 
-        const urlMetodo = window.Urls?.selectShippingMethods;
+        let dadosLoja = null;
+
+        try {
+          dadosLoja = JSON.parse(textoLoja);
+        } catch {
+          dadosLoja = {
+            resposta: textoLoja
+          };
+        }
+
+        const urlMetodo =
+          window.Urls?.selectShippingMethods;
 
         if (!urlMetodo) {
           return {
             ok: false,
             etapa: "metodo",
-            mensagem: "window.Urls.selectShippingMethods não foi encontrado",
-            statusLoja: respostaLoja.status
+            mensagem:
+              "window.Urls.selectShippingMethods não foi encontrado",
+            statusLoja: respostaLoja.status,
+            dadosLoja
           };
         }
 
         const respostaMetodo = await fetch(
-          new URL(urlMetodo, window.location.origin).toString(),
+          new URL(
+            urlMetodo,
+            window.location.origin
+          ).toString(),
           {
             method: "POST",
             credentials: "include",
             headers: {
               "Content-Type":
                 "application/x-www-form-urlencoded; charset=UTF-8",
-              Accept: "application/json, text/javascript, */*; q=0.01",
-              "X-Requested-With": "XMLHttpRequest"
+
+              Accept:
+                "application/json, text/javascript, */*; q=0.01",
+
+              "X-Requested-With":
+                "XMLHttpRequest"
             },
-            body: new URLSearchParams({ methodID: "7024" }).toString()
+
+            body: new URLSearchParams({
+              methodID: "7024"
+            }).toString()
           }
         );
 
-        await respostaMetodo.text();
+        const textoMetodo =
+          await respostaMetodo.text();
 
         return {
-          ok: respostaLoja.ok && respostaMetodo.ok,
-          statusLoja: respostaLoja.status,
-          statusMetodo: respostaMetodo.status
+          ok:
+            respostaLoja.ok &&
+            respostaMetodo.ok,
+
+          statusLoja:
+            respostaLoja.status,
+
+          statusMetodo:
+            respostaMetodo.status,
+
+          dadosLoja,
+
+          respostaMetodo:
+            textoMetodo
         };
       } catch (erro) {
         return {
           ok: false,
-          mensagem: erro?.message || String(erro)
+          mensagem: erro.message
         };
       }
     },
@@ -475,26 +394,32 @@ async function registrarPrimeiraLoja(radiosLojas) {
     }
   );
 
+  console.log(
+    "Jaú Serve: resultado da configuração:",
+    resultado
+  );
+
   if (!resultado.ok) {
     throw new Error(
       `Não foi possível registrar a loja: ${
-        resultado.mensagem || JSON.stringify(resultado)
+        resultado.mensagem ||
+        JSON.stringify(resultado)
       }`
     );
   }
 
   /*
-   * Os cookies já foram gravados no contexto pelas requisições acima.
-   * Não fazemos pagina.reload(), que era o maior gargalo de tempo.
+   * A configuração foi concluída pelas próprias requisições fetch acima.
+   * Os cookies e dados de sessão já pertencem ao contexto atual do navegador.
+   * Portanto, não é necessário executar pagina.reload(), que podia consumir
+   * cerca de 60 segundos no Render.
    */
+  await pagina.waitForTimeout(300);
+
   sessaoPreparada = true;
 
   console.log(
-    "Jaú Serve: loja e retirada configuradas sem recarregar a página.",
-    {
-      statusLoja: resultado.statusLoja,
-      statusMetodo: resultado.statusMetodo
-    }
+    "Jaú Serve: loja e retirada configuradas com sucesso, sem recarregar a página."
   );
 }
 
@@ -504,14 +429,31 @@ async function configurarLoja() {
   }
 
   await abrirPopupLoja();
-  const radiosLojas = await selecionarCidade();
-  await registrarPrimeiraLoja(radiosLojas);
+
+  const radiosLojas =
+    await selecionarCidade();
+
+  await registrarPrimeiraLoja(
+    radiosLojas
+  );
+}
+
+function sessaoEstaValida() {
+  return Boolean(
+    sessaoPreparada &&
+    browser &&
+    browser.isConnected() &&
+    contexto &&
+    pagina &&
+    !pagina.isClosed()
+  );
 }
 
 async function prepararSessao() {
-  cancelarFechamentoOcioso();
-
   if (sessaoEstaValida()) {
+    console.log(
+      "Jaú Serve: reutilizando sessão já preparada."
+    );
     return;
   }
 
@@ -525,34 +467,86 @@ async function prepararSessao() {
 async function consultarSugestoes(termo) {
   await prepararSessao();
 
-  /*
-   * BrowserContext.request compartilha os cookies com o contexto do navegador.
-   * Assim, a consulta utiliza a loja selecionada sem executar JavaScript na
-   * página para cada produto, reduzindo consumo e tempo.
-   */
-  const resposta = await contexto.request.get(SUGGESTIONS_URL, {
-    params: { q: termo },
-    timeout: TIMEOUT_REQUISICAO_MS,
-    headers: {
-      Accept: "text/html, */*; q=0.01",
-      "X-Requested-With": "XMLHttpRequest",
-      Referer: HOME_URL
+  const resultado = await pagina.evaluate(
+    async ({ endpoint, termoBusca }) => {
+      try {
+        const url = new URL(endpoint);
+
+        url.searchParams.set(
+          "q",
+          termoBusca
+        );
+
+        const resposta = await fetch(
+          url.toString(),
+          {
+            method: "GET",
+
+            credentials: "include",
+
+            headers: {
+              Accept:
+                "text/html, */*; q=0.01",
+
+              "X-Requested-With":
+                "XMLHttpRequest"
+            }
+          }
+        );
+
+        return {
+          ok: resposta.ok,
+          status: resposta.status,
+          url: resposta.url,
+          html: await resposta.text()
+        };
+      } catch (erro) {
+        return {
+          ok: false,
+          status: 0,
+          url: "",
+          html: "",
+          erro: erro.message
+        };
+      }
+    },
+    {
+      endpoint: SUGGESTIONS_URL,
+      termoBusca: termo
     }
-  });
-
-  const status = resposta.status();
-  const html = await resposta.text();
-
-  console.log(
-    `Jaú Serve: endpoint ${status}; HTML ${html.length} bytes; termo: ${termo}`
   );
 
-  if (!resposta.ok()) {
-    console.log("Jaú Serve: endpoint de sugestões retornou falha:", status);
+  console.log(
+    "Jaú Serve endpoint:",
+    resultado.status,
+    resultado.url
+  );
+
+  console.log(
+    "Jaú Serve tamanho do HTML:",
+    resultado.html?.length || 0
+  );
+
+  console.log(
+    "Jaú Serve contém grid-tile:",
+    Boolean(
+      resultado.html?.includes(
+        "grid-tile"
+      )
+    )
+  );
+
+  if (!resultado.ok) {
+    console.log(
+      "Falha no endpoint do Jaú Serve:",
+      resultado.erro ||
+      resultado.status
+    );
+
     return "";
   }
 
-  return html;
+  return resultado.html;
 }
 
 function converterPreco(texto) {
@@ -564,7 +558,9 @@ function converterPreco(texto) {
       .replace(",", ".")
   );
 
-  return Number.isFinite(valor) ? valor : null;
+  return Number.isFinite(valor)
+    ? valor
+    : null;
 }
 
 function extrairProdutos(html) {
@@ -572,7 +568,7 @@ function extrairProdutos(html) {
     return [];
   }
 
-  const $ = cheerio.load(html, null, false);
+  const $ = cheerio.load(html);
   const produtos = [];
 
   $(".grid-tile").each((_, elemento) => {
@@ -580,7 +576,9 @@ function extrairProdutos(html) {
 
     const ean =
       card.attr("data-pid") ||
-      card.find(".product-tile").attr("data-itemid") ||
+      card
+        .find(".product-tile")
+        .attr("data-itemid") ||
       null;
 
     const nomeLink = card
@@ -597,67 +595,124 @@ function extrairProdutos(html) {
       ?.replace(/\s+/g, " ")
       .trim();
 
-    const productName = nomeLink || nomeImagem || "";
+    const productName =
+      nomeLink ||
+      nomeImagem ||
+      "";
 
-    const elementoPreco = card.find(".price .sales .value").first();
-    const priceContent = elementoPreco.attr("content");
-    const priceText = elementoPreco.text();
+    const priceContent = card
+      .find(".price .sales .value")
+      .first()
+      .attr("content");
+
+    const priceText = card
+      .find(".price .sales .value")
+      .first()
+      .text();
 
     let price = Number(priceContent);
 
-    if (!Number.isFinite(price) || price <= 0) {
-      price = converterPreco(priceText);
+    if (
+      !Number.isFinite(price) ||
+      price <= 0
+    ) {
+      price = converterPreco(
+        priceText
+      );
     }
 
-    const elementoPrecoLista = card
+    const listPriceContent = card
       .find(".strike-through .value")
-      .first();
+      .first()
+      .attr("content");
 
-    const listPriceContent = elementoPrecoLista.attr("content");
-    const listPriceText = elementoPrecoLista.text();
+    const listPriceText = card
+      .find(".strike-through .value")
+      .first()
+      .text();
 
-    let listPrice = Number(listPriceContent);
+    let listPrice =
+      Number(listPriceContent);
 
-    if (!Number.isFinite(listPrice) || listPrice <= 0) {
-      listPrice = converterPreco(listPriceText);
+    if (
+      !Number.isFinite(listPrice) ||
+      listPrice <= 0
+    ) {
+      listPrice = converterPreco(
+        listPriceText
+      );
     }
 
-    const image = card.find("img.tile-image").first().attr("src") || null;
-
-    const href =
-      card.find("a.tile-image-container").first().attr("href") ||
-      card.find(".pdp-link a").first().attr("href") ||
+    const image =
+      card
+        .find("img.tile-image")
+        .first()
+        .attr("src") ||
       null;
 
-    if (!productName || !Number.isFinite(price) || price <= 0) {
+    const href =
+      card
+        .find("a.tile-image-container")
+        .first()
+        .attr("href") ||
+      card
+        .find(".pdp-link a")
+        .first()
+        .attr("href") ||
+      null;
+
+    if (
+      !productName ||
+      !Number.isFinite(price) ||
+      price <= 0
+    ) {
       return;
     }
 
     produtos.push({
       productName,
       productTitle: productName,
+
       items: [
         {
           ean,
           itemId: ean,
-          images: [{ imageUrl: image }],
+
+          images: [
+            {
+              imageUrl: image
+            }
+          ],
+
           sellers: [
             {
               sellerId: "jauserve",
               sellerDefault: true,
+
               commertialOffer: {
                 Price: price,
+
                 ListPrice:
-                  Number.isFinite(listPrice) && listPrice > 0
+                  Number.isFinite(
+                    listPrice
+                  ) &&
+                  listPrice > 0
                     ? listPrice
                     : price,
+
                 IsAvailable: true
               }
             }
           ]
         }
       ],
-      link: href ? new URL(href, BASE_URL).toString() : null
+
+      link: href
+        ? new URL(
+            href,
+            BASE_URL
+          ).toString()
+        : null
     });
   });
 
@@ -665,188 +720,263 @@ function extrairProdutos(html) {
 }
 
 function removerDuplicados(produtos) {
-  const identificadores = new Set();
+  const identificadores =
+    new Set();
 
-  return produtos.filter((produto) => {
-    const ean = String(produto.items?.[0]?.ean || "");
-    const identificador =
-      ean || String(produto.productName || "").toLowerCase().trim();
+  return produtos.filter(
+    (produto) => {
+      const ean = String(
+        produto.items?.[0]?.ean ||
+        ""
+      );
 
-    if (!identificador || identificadores.has(identificador)) {
-      return false;
+      const identificador =
+        ean ||
+        String(
+          produto.productName || ""
+        )
+          .toLowerCase()
+          .trim();
+
+      if (
+        identificadores.has(
+          identificador
+        )
+      ) {
+        return false;
+      }
+
+      identificadores.add(
+        identificador
+      );
+
+      return true;
     }
-
-    identificadores.add(identificador);
-    return true;
-  });
+  );
 }
 
 async function pesquisarNoSite(termo) {
   try {
-    const html = await consultarSugestoes(termo);
-    const produtos = extrairProdutos(html);
+    const html =
+      await consultarSugestoes(termo);
+
+    const produtos =
+      extrairProdutos(html);
 
     console.log(
-      `Jaú Serve: ${produtos.length} produto(s) extraído(s) para o termo.`
+      "Jaú Serve termo:",
+      termo
+    );
+
+    console.log(
+      "Produtos encontrados no Jaú Serve:",
+      produtos.map(
+        (produto) =>
+          produto.productName
+      )
     );
 
     return produtos;
   } catch (erro) {
-    console.error("Erro na pesquisa do Jaú Serve:", erro.message);
-
-    const mensagem = String(erro?.message || "");
+    console.error(
+      "Erro na pesquisa do Jaú Serve:",
+      erro.message
+    );
 
     if (
-      mensagem.includes("ERR_CONNECTION_CLOSED") ||
-      mensagem.includes("Target page") ||
-      mensagem.includes("has been closed") ||
-      mensagem.includes("Browser has been closed") ||
-      mensagem.includes("browserContext.request")
+      erro.message.includes(
+        "ERR_CONNECTION_CLOSED"
+      ) ||
+      erro.message.includes(
+        "Target page"
+      ) ||
+      erro.message.includes(
+        "has been closed"
+      )
     ) {
-      await fecharSessao("erro de conexão");
+      await fecharSessao();
     }
 
     return [];
   }
 }
 
-async function limparCacheDoNavegador() {
-  if (!contexto || !pagina || pagina.isClosed()) {
-    return;
-  }
-
-  let sessaoCdp = null;
-
-  try {
-    sessaoCdp = await contexto.newCDPSession(pagina);
-    await sessaoCdp.send("Network.enable");
-    await sessaoCdp.send("Network.clearBrowserCache");
-  } catch {
-    // Limpeza de cache é complementar; a pesquisa não deve falhar por isso.
-  } finally {
-    await sessaoCdp?.detach().catch(() => {});
-  }
-}
-
-async function aplicarPoliticaDeMemoria() {
-  pesquisasNaSessao += 1;
-
-  if (pesquisasNaSessao >= MAX_PESQUISAS_POR_SESSAO) {
-    console.log(
-      `Jaú Serve: limite de ${MAX_PESQUISAS_POR_SESSAO} pesquisa(s) atingido; reciclando Chromium.`
+async function buscarProdutoInterno(
+  termoBusca,
+  eanBuscado
+) {
+  const termos =
+    gerarTermosBusca(
+      termoBusca,
+      {
+        limite: 6
+      }
     );
-    await fecharSessao("limite de pesquisas");
-    return;
-  }
 
-  await limparCacheDoNavegador();
-  agendarFechamentoOcioso();
-}
-
-async function buscarProdutoInterno(termoBusca, eanBuscado) {
-  cancelarFechamentoOcioso();
-
-  const termos = prepararTermosBusca(termoBusca);
   let produtos = [];
 
-  try {
-    for (const termo of termos) {
-      const encontrados = await pesquisarNoSite(termo);
-      produtos.push(...encontrados);
+  console.log(
+    "Jaú Serve: termos inteligentes:",
+    termos
+  );
 
-      if (encontrados.length > 0) {
-        break;
-      }
+  for (const termo of termos) {
+    const encontrados =
+      await pesquisarNoSite(
+        termo
+      );
+
+    produtos.push(
+      ...encontrados
+    );
+
+    if (
+      encontrados.length > 0
+    ) {
+      break;
     }
+  }
 
-    produtos = removerDuplicados(produtos);
+  produtos =
+    removerDuplicados(produtos);
 
-    if (produtos.length === 0) {
-      console.log("Jaú Serve: nenhum produto encontrado.", {
-        termoBusca,
-        eanBuscado: eanBuscado || null,
-        termosTentados: termos.length
-      });
-      return null;
-    }
+  if (produtos.length === 0) {
+    console.log("========== DEBUG JAÚ SERVE: SEM PRODUTOS ==========");
+    console.log("Termo buscado:", termoBusca);
+    console.log("EAN buscado:", eanBuscado || null);
+    console.log("Termos tentados:", termos);
+    console.log("====================================================");
+    return null;
+  }
 
-    const melhor = escolherMelhorProduto(
+  console.log("========== DEBUG JAÚ SERVE: PRODUTOS EXTRAÍDOS ==========");
+  console.log("Termo buscado:", termoBusca);
+  console.log("EAN buscado:", eanBuscado || null);
+  console.log("Quantidade de produtos após remover duplicados:", produtos.length);
+  console.dir(produtos, { depth: 8 });
+  console.log("=========================================================");
+
+  const melhor =
+    escolherMelhorProduto(
       produtos,
       calcularPontuacao,
       termoBusca,
       eanBuscado
     );
 
-    if (!melhor) {
-      console.log("Jaú Serve: nenhum candidato atingiu o score mínimo.", {
-        termoBusca,
-        candidatos: produtos.length
-      });
-      return null;
-    }
-
-    const item = melhor.items?.[0];
-    const seller =
-      item?.sellers?.find((registro) => registro.sellerDefault) ||
-      item?.sellers?.[0];
-    const oferta = seller?.commertialOffer;
-
-    if (!item || !seller || !oferta) {
-      console.log(
-        "Jaú Serve: estrutura incompleta no produto selecionado."
-      );
-      return null;
-    }
-
-    const produtoCriado = criarProduto({
-      supermarketId: "jauserve",
-      productName: melhor.productName,
-      ean: item.ean,
-      itemId: item.itemId,
-      sellerId: seller.sellerId,
-      price: oferta.Price,
-      listPrice: oferta.ListPrice,
-      available: oferta.IsAvailable === true,
-      image: item.images?.[0]?.imageUrl || null,
-      url: melhor.link
-    });
-
-    console.log("Jaú Serve: produto selecionado:", {
-      productName: produtoCriado?.productName,
-      ean: produtoCriado?.ean,
-      price: produtoCriado?.price,
-      available: produtoCriado?.available
-    });
-
-    return produtoCriado;
-  } finally {
-    /*
-     * Executado mesmo quando o produto não é encontrado ou ocorre erro.
-     * É a principal proteção contra crescimento contínuo de memória.
-     */
-    await aplicarPoliticaDeMemoria();
+  if (!melhor) {
+    console.log("========== DEBUG JAÚ SERVE: MELHOR NÃO ESCOLHIDO ==========");
+    console.log("Termo buscado:", termoBusca);
+    console.log("EAN buscado:", eanBuscado || null);
+    console.log("Quantidade de candidatos:", produtos.length);
+    console.dir(produtos, { depth: 8 });
+    console.log("============================================================");
+    return null;
   }
+
+  console.log("========== DEBUG JAÚ SERVE: MELHOR PRODUTO ==========");
+  console.dir(melhor, { depth: 10 });
+  console.log("=====================================================");
+
+  const item =
+    melhor.items?.[0];
+
+  const seller =
+    item?.sellers?.find(
+      (registro) =>
+        registro.sellerDefault
+    ) ||
+    item?.sellers?.[0];
+
+  const oferta =
+    seller?.commertialOffer;
+
+  console.log("========== DEBUG JAÚ SERVE: ESTRUTURA FINAL ==========");
+  console.log("Item encontrado:", Boolean(item));
+  console.dir(item, { depth: 8 });
+  console.log("Seller encontrado:", Boolean(seller));
+  console.dir(seller, { depth: 8 });
+  console.log("Oferta encontrada:", Boolean(oferta));
+  console.dir(oferta, { depth: 8 });
+  console.log("=======================================================");
+
+  if (
+    !item ||
+    !seller ||
+    !oferta
+  ) {
+    console.log("Jaú Serve: retorno nulo porque item, seller ou oferta não foi encontrado.");
+    return null;
+  }
+
+  const produtoCriado = criarProduto({
+    supermarketId: "jauserve",
+    productName:
+      melhor.productName,
+
+    ean: item.ean,
+    itemId: item.itemId,
+
+    sellerId:
+      seller.sellerId,
+
+    price:
+      oferta.Price,
+
+    listPrice:
+      oferta.ListPrice,
+
+    available:
+      oferta.IsAvailable === true,
+
+    image:
+      item.images?.[0]
+        ?.imageUrl ||
+      null,
+
+    url:
+      melhor.link
+  });
+
+  console.log("========== DEBUG JAÚ SERVE: PRODUTO CRIADO ==========");
+  console.dir(produtoCriado, { depth: 8 });
+  console.log("======================================================");
+
+  return produtoCriado;
 }
 
-async function buscarProduto(termoBusca, eanBuscado) {
-  return executarExclusivo(() =>
-    buscarProdutoInterno(termoBusca, eanBuscado)
+async function buscarProduto(
+  termoBusca,
+  eanBuscado
+) {
+  return executarExclusivo(
+    () =>
+      buscarProdutoInterno(
+        termoBusca,
+        eanBuscado
+      )
   );
 }
 
 async function encerrar() {
-  await executarExclusivo(() => fecharSessao("encerramento do serviço"));
+  await fecharSessao();
 }
 
-process.once("SIGINT", async () => {
-  await encerrar();
-  process.exit(0);
-});
+process.once(
+  "SIGINT",
+  async () => {
+    await encerrar();
+    process.exit(0);
+  }
+);
 
-process.once("SIGTERM", async () => {
-  await encerrar();
-  process.exit(0);
-});
+process.once(
+  "SIGTERM",
+  async () => {
+    await encerrar();
+    process.exit(0);
+  }
+);
 
 module.exports = {
   buscarProduto,
