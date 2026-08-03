@@ -1,19 +1,15 @@
 /*
  * Motor inteligente de geração de termos de busca.
+ *
+ * Gera consultas do mais específico para o mais amplo,
+ * usando atributos detectados quando disponíveis.
  */
 
 const PALAVRAS_DESCARTAVEIS = new Set([
   "emb", "embalagem", "pacote", "pcte", "pct",
   "tipo", "classe", "produto", "unidade",
-  "unidades", "und", "un", "tradicional", "original"
-]);
-
-const PALAVRAS_IMPORTANTES = new Set([
-  "zero", "integral", "desnatado", "semidesnatado",
-  "semi", "light", "diet", "lactose", "gluten",
-  "açucar", "acucar", "sem", "refinado",
-  "parboilizado", "carioca", "preto", "branco",
-  "vermelho", "longa", "vida", "lata", "pet"
+  "unidades", "und", "un", "tradicional",
+  "original", "especial", "caixa"
 ]);
 
 const SINONIMOS = [
@@ -31,7 +27,9 @@ function removerAcentos(valor) {
 }
 
 function normalizarEspacos(valor) {
-  return String(valor || "").replace(/\s+/g, " ").trim();
+  return String(valor || "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizarComparacao(valor) {
@@ -44,9 +42,14 @@ function normalizarComparacao(valor) {
 
 function aplicarSinonimos(valor) {
   let resultado = String(valor || "");
+
   for (const regra of SINONIMOS) {
-    resultado = resultado.replace(regra.encontrar, regra.substituir);
+    resultado = resultado.replace(
+      regra.encontrar,
+      regra.substituir
+    );
   }
+
   return normalizarEspacos(resultado);
 }
 
@@ -54,7 +57,10 @@ function extrairPesoOuVolume(valor) {
   const correspondencias = String(valor || "").match(
     /\b\d+(?:[.,]\d+)?\s*(?:kg|g|mg|ml|l|lt|litro|litros|un|und|unidade|unidades)\b/gi
   );
-  if (!correspondencias) return [];
+
+  if (!correspondencias) {
+    return [];
+  }
 
   return correspondencias.map((item) =>
     normalizarEspacos(
@@ -81,7 +87,12 @@ function removerPalavrasDescartaveis(valor) {
     normalizarEspacos(valor)
       .split(" ")
       .filter(Boolean)
-      .filter((token) => !PALAVRAS_DESCARTAVEIS.has(normalizarComparacao(token)))
+      .filter(
+        (token) =>
+          !PALAVRAS_DESCARTAVEIS.has(
+            normalizarComparacao(token)
+          )
+      )
       .join(" ")
   );
 }
@@ -90,9 +101,17 @@ function removerRepeticoes(valor) {
   const vistos = new Set();
   const resultado = [];
 
-  for (const token of normalizarEspacos(valor).split(" ").filter(Boolean)) {
+  for (
+    const token of normalizarEspacos(valor)
+      .split(" ")
+      .filter(Boolean)
+  ) {
     const chave = normalizarComparacao(token);
-    if (!chave || vistos.has(chave)) continue;
+
+    if (!chave || vistos.has(chave)) {
+      continue;
+    }
+
     vistos.add(chave);
     resultado.push(token);
   }
@@ -100,92 +119,213 @@ function removerRepeticoes(valor) {
   return normalizarEspacos(resultado.join(" "));
 }
 
-function limitarPalavras(valor, limite) {
-  return normalizarEspacos(valor)
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, limite)
-    .join(" ");
-}
+function adicionarTermo(lista, vistos, partes) {
+  const termo = removerRepeticoes(
+    (Array.isArray(partes) ? partes : [partes])
+      .filter(Boolean)
+      .join(" ")
+  );
 
-function extrairPalavrasImportantes(valor) {
-  return normalizarEspacos(valor)
-    .split(" ")
-    .filter(Boolean)
-    .filter((token) => PALAVRAS_IMPORTANTES.has(normalizarComparacao(token)));
-}
+  if (!termo) {
+    return;
+  }
 
-function adicionarTermo(lista, vistos, termo) {
-  const limpo = normalizarEspacos(termo);
-  if (!limpo) return;
+  const chave = normalizarComparacao(termo);
 
-  const chave = normalizarComparacao(limpo);
-  if (!chave || vistos.has(chave)) return;
+  if (!chave || vistos.has(chave)) {
+    return;
+  }
 
   vistos.add(chave);
-  lista.push(limpo);
+  lista.push(termo);
 }
 
-function gerarTermosBusca(termoOriginal, opcoes = {}) {
-  const limite = Number(opcoes.limite) > 0 ? Number(opcoes.limite) : 6;
-  const original = normalizarEspacos(termoOriginal);
-  if (!original) return [];
+function gerarTermosBusca(
+  termoOriginal,
+  opcoes = {}
+) {
+  const limite =
+    Number(opcoes.limite) > 0
+      ? Number(opcoes.limite)
+      : 8;
+
+  const original = normalizarEspacos(
+    termoOriginal
+  );
+
+  if (!original) {
+    return [];
+  }
 
   const termos = [];
   const vistos = new Set();
 
-  const comSinonimos = aplicarSinonimos(original);
-  const semRepeticoes = removerRepeticoes(comSinonimos);
-  const pesos = extrairPesoOuVolume(semRepeticoes);
-  const pesoPrincipal = pesos[0] || "";
-  const semPeso = removerPesoOuVolume(semRepeticoes);
-  const semDescartaveis = removerPalavrasDescartaveis(semPeso);
-  const palavras = semDescartaveis.split(" ").filter(Boolean);
-  const importantes = extrairPalavrasImportantes(semDescartaveis);
+  const normalizado = removerRepeticoes(
+    aplicarSinonimos(original)
+  );
 
-  adicionarTermo(termos, vistos, semRepeticoes);
-  adicionarTermo(termos, vistos, semPeso);
+  const pesoOriginal =
+    extrairPesoOuVolume(normalizado)[0] ||
+    opcoes.pesoTexto ||
+    "";
+
+  const semPeso =
+    removerPesoOuVolume(normalizado);
+
+  const simplificado =
+    removerPalavrasDescartaveis(semPeso);
+
+  const marca = normalizarEspacos(
+    opcoes.marca || ""
+  );
+
+  const categoria = normalizarEspacos(
+    opcoes.categoria || ""
+  );
+
+  const flags = Array.isArray(opcoes.flags)
+    ? opcoes.flags
+    : [];
+
+  const flagsTexto = flags
+    .map((flag) =>
+      String(flag || "")
+        .replace(/_/g, " ")
+    )
+    .filter(Boolean)
+    .join(" ");
+
+  /*
+   * 1. Consulta original normalizada.
+   */
   adicionarTermo(
     termos,
     vistos,
-    [semDescartaveis, pesoPrincipal].filter(Boolean).join(" ")
+    normalizado
   );
 
-  if (palavras.length > 0) {
-    adicionarTermo(
-      termos,
-      vistos,
-      [limitarPalavras(semDescartaveis, 4), pesoPrincipal]
-        .filter(Boolean)
-        .join(" ")
-    );
-  }
-
-  if (palavras.length >= 2) {
-    adicionarTermo(
-      termos,
-      vistos,
-      removerRepeticoes(
-        [
-          ...palavras.slice(-3),
-          ...importantes,
-          pesoPrincipal
-        ].filter(Boolean).join(" ")
-      )
-    );
-  }
-
+  /*
+   * 2. Categoria + marca + características + peso.
+   * Ex.: CREME DENTAL COLGATE TRIPLA AÇÃO 90g
+   */
   adicionarTermo(
     termos,
     vistos,
-    limitarPalavras(semDescartaveis, 3)
+    [
+      categoria,
+      marca,
+      flagsTexto,
+      pesoOriginal
+    ]
   );
 
-  if (palavras.length >= 2) {
+  /*
+   * 3. Categoria + marca + peso.
+   * Ex.: AÇÚCAR UNIÃO 1kg
+   */
+  adicionarTermo(
+    termos,
+    vistos,
+    [
+      categoria,
+      marca,
+      pesoOriginal
+    ]
+  );
+
+  /*
+   * 4. Marca + características + peso.
+   * Ex.: COLGATE TRIPLA AÇÃO 90g
+   */
+  adicionarTermo(
+    termos,
+    vistos,
+    [
+      marca,
+      flagsTexto,
+      pesoOriginal
+    ]
+  );
+
+  /*
+   * 5. Nome simplificado + peso.
+   */
+  adicionarTermo(
+    termos,
+    vistos,
+    [
+      simplificado,
+      pesoOriginal
+    ]
+  );
+
+  /*
+   * 6. Marca + peso.
+   * Ex.: UNIÃO 1kg
+   */
+  adicionarTermo(
+    termos,
+    vistos,
+    [
+      marca,
+      pesoOriginal
+    ]
+  );
+
+  /*
+   * 7. Categoria + marca.
+   */
+  adicionarTermo(
+    termos,
+    vistos,
+    [
+      categoria,
+      marca
+    ]
+  );
+
+  /*
+   * 8. Apenas marca.
+   */
+  adicionarTermo(
+    termos,
+    vistos,
+    marca
+  );
+
+  /*
+   * Fallbacks quando detectarAtributos não reconhece
+   * marca ou categoria.
+   */
+  const palavras = simplificado
+    .split(" ")
+    .filter(Boolean);
+
+  if (!marca && palavras.length >= 2) {
     adicionarTermo(
       termos,
       vistos,
-      palavras.slice(-2).join(" ")
+      [
+        ...palavras.slice(-3),
+        pesoOriginal
+      ]
+    );
+
+    adicionarTermo(
+      termos,
+      vistos,
+      palavras.slice(-2)
+    );
+  }
+
+  if (!categoria && palavras.length >= 3) {
+    adicionarTermo(
+      termos,
+      vistos,
+      [
+        ...palavras.slice(0, 3),
+        pesoOriginal
+      ]
     );
   }
 

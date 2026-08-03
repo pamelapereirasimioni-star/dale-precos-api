@@ -15,6 +15,12 @@ const { calcularPontuacao } = require("../core/score");
 const { escolherMelhorProduto } = require("../core/escolhedor");
 const { criarProduto } = require("../core/produto");
 const { gerarTermosBusca } = require("../utils/termosBusca");
+const { detectarAtributos } = require("../core/atributos");
+
+const SCORE_PARA_PARAR_BUSCA = Math.max(
+  1000,
+  Number(process.env.JAUSERVE_SCORE_PARADA) || 4500
+);
 
 const BASE_URL = "https://www.jauserve.com.br";
 
@@ -805,35 +811,96 @@ async function buscarProdutoInterno(
   termoBusca,
   eanBuscado
 ) {
+  const atributosBusca =
+    detectarAtributos(termoBusca);
+
   const termos =
     gerarTermosBusca(
       termoBusca,
       {
-        limite: 6
+        limite: 8,
+        marca:
+          atributosBusca.marca || "",
+        categoria:
+          atributosBusca.categoria || "",
+        flags:
+          atributosBusca.flags || []
       }
     );
 
   let produtos = [];
+  let melhor = null;
+  let melhorScore = -9999;
+  const termosExecutados = [];
 
   console.log(
-    "Jaú Serve: termos inteligentes:",
+    "Jaú Serve: consultas inteligentes:",
     termos
   );
 
   for (const termo of termos) {
+    termosExecutados.push(termo);
+
     const encontrados =
-      await pesquisarNoSite(
-        termo
+      await pesquisarNoSite(termo);
+
+    if (encontrados.length === 0) {
+      continue;
+    }
+
+    produtos = removerDuplicados([
+      ...produtos,
+      ...encontrados
+    ]);
+
+    const candidato =
+      escolherMelhorProduto(
+        produtos,
+        calcularPontuacao,
+        termoBusca,
+        eanBuscado
       );
 
-    produtos.push(
-      ...encontrados
-    );
+    if (candidato) {
+      const scoreCandidato =
+        calcularPontuacao(
+          termoBusca,
+          candidato,
+          eanBuscado
+        );
 
-    if (
-      encontrados.length > 0
-    ) {
-      break;
+      if (scoreCandidato > melhorScore) {
+        melhor = candidato;
+        melhorScore = scoreCandidato;
+      }
+
+      console.log(
+        "Jaú Serve: melhor parcial:",
+        {
+          termo,
+          produto:
+            candidato.productName ||
+            candidato.productTitle,
+          score: scoreCandidato,
+          candidatos:
+            produtos.length
+        }
+      );
+
+      /*
+       * Só interrompe quando o candidato é realmente forte.
+       * Um primeiro resultado fraco não encerra mais a busca.
+       */
+      if (
+        scoreCandidato >=
+        SCORE_PARA_PARAR_BUSCA
+      ) {
+        console.log(
+          "Jaú Serve: score suficiente; encerrando consultas.",
+          scoreCandidato
+        );
+        break;
+      }
     }
   }
 
@@ -841,42 +908,67 @@ async function buscarProdutoInterno(
     removerDuplicados(produtos);
 
   if (produtos.length === 0) {
-    console.log("========== DEBUG JAÚ SERVE: SEM PRODUTOS ==========");
-    console.log("Termo buscado:", termoBusca);
-    console.log("EAN buscado:", eanBuscado || null);
-    console.log("Termos tentados:", termos);
-    console.log("====================================================");
-    return null;
-  }
-
-  console.log("========== DEBUG JAÚ SERVE: PRODUTOS EXTRAÍDOS ==========");
-  console.log("Termo buscado:", termoBusca);
-  console.log("EAN buscado:", eanBuscado || null);
-  console.log("Quantidade de produtos após remover duplicados:", produtos.length);
-  console.dir(produtos, { depth: 8 });
-  console.log("=========================================================");
-
-  const melhor =
-    escolherMelhorProduto(
-      produtos,
-      calcularPontuacao,
-      termoBusca,
-      eanBuscado
+    console.log(
+      "Jaú Serve: nenhum produto encontrado.",
+      {
+        termoBusca,
+        eanBuscado:
+          eanBuscado || null,
+        termosExecutados
+      }
     );
 
-  if (!melhor) {
-    console.log("========== DEBUG JAÚ SERVE: MELHOR NÃO ESCOLHIDO ==========");
-    console.log("Termo buscado:", termoBusca);
-    console.log("EAN buscado:", eanBuscado || null);
-    console.log("Quantidade de candidatos:", produtos.length);
-    console.dir(produtos, { depth: 8 });
-    console.log("============================================================");
     return null;
   }
 
-  console.log("========== DEBUG JAÚ SERVE: MELHOR PRODUTO ==========");
-  console.dir(melhor, { depth: 10 });
-  console.log("=====================================================");
+  /*
+   * Se nenhuma busca parcial gerou melhor candidato,
+   * fazemos a decisão final usando todos os produtos.
+   */
+  if (!melhor) {
+    melhor =
+      escolherMelhorProduto(
+        produtos,
+        calcularPontuacao,
+        termoBusca,
+        eanBuscado
+      );
+
+    melhorScore = melhor
+      ? calcularPontuacao(
+          termoBusca,
+          melhor,
+          eanBuscado
+        )
+      : -9999;
+  }
+
+  if (!melhor) {
+    console.log(
+      "Jaú Serve: candidatos encontrados, mas nenhum atingiu o mínimo.",
+      {
+        termoBusca,
+        quantidade:
+          produtos.length,
+        termosExecutados
+      }
+    );
+
+    return null;
+  }
+
+  console.log(
+    "Jaú Serve: produto escolhido:",
+    {
+      productName:
+        melhor.productName ||
+        melhor.productTitle,
+      score: melhorScore,
+      candidatos:
+        produtos.length,
+      termosExecutados
+    }
+  );
 
   const item =
     melhor.items?.[0];
@@ -890,15 +982,6 @@ async function buscarProdutoInterno(
 
   const oferta =
     seller?.commertialOffer;
-
-  console.log("========== DEBUG JAÚ SERVE: ESTRUTURA FINAL ==========");
-  console.log("Item encontrado:", Boolean(item));
-  console.dir(item, { depth: 8 });
-  console.log("Seller encontrado:", Boolean(seller));
-  console.dir(seller, { depth: 8 });
-  console.log("Oferta encontrada:", Boolean(oferta));
-  console.dir(oferta, { depth: 8 });
-  console.log("=======================================================");
 
   if (
     !item ||
