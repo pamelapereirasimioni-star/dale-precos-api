@@ -9,7 +9,10 @@ const { detectarAtributos } = require("./atributos");
  * 1 kg  -> 1000
  * 1 L   -> 1000
  */
-function pesosCompativeis(pesoBusca, pesoProduto) {
+function pesosCompativeis(
+  pesoBusca,
+  pesoProduto
+) {
   if (!pesoBusca || !pesoProduto) {
     return true;
   }
@@ -24,8 +27,11 @@ function pesosCompativeis(pesoBusca, pesoProduto) {
     return true;
   }
 
-  const diferenca = Math.abs(busca - produto);
-  const tolerancia = Math.max(5, busca * 0.02);
+  const diferenca =
+    Math.abs(busca - produto);
+
+  const tolerancia =
+    Math.max(5, busca * 0.02);
 
   return diferenca <= tolerancia;
 }
@@ -33,8 +39,16 @@ function pesosCompativeis(pesoBusca, pesoProduto) {
 /**
  * Verifica conflitos entre atributos que não podem
  * coexistir no mesmo produto.
+ *
+ * Importante:
+ * se apenas a busca ou apenas o produto possuir a flag,
+ * não rejeitamos aqui. O conflito só existe quando ambos
+ * informam valores diferentes do mesmo grupo.
  */
-function possuiConflitoDeFlags(flagsBusca, flagsProduto) {
+function possuiConflitoDeFlags(
+  flagsBusca,
+  flagsProduto
+) {
   const gruposExcludentes = [
     [
       "integral",
@@ -69,13 +83,15 @@ function possuiConflitoDeFlags(flagsBusca, flagsProduto) {
   ];
 
   for (const grupo of gruposExcludentes) {
-    const flagBuscada = grupo.find((flag) =>
-      flagsBusca.includes(flag)
-    );
+    const flagBuscada =
+      grupo.find((flag) =>
+        flagsBusca.includes(flag)
+      );
 
-    const flagProduto = grupo.find((flag) =>
-      flagsProduto.includes(flag)
-    );
+    const flagProduto =
+      grupo.find((flag) =>
+        flagsProduto.includes(flag)
+      );
 
     if (
       flagBuscada &&
@@ -90,10 +106,18 @@ function possuiConflitoDeFlags(flagsBusca, flagsProduto) {
 }
 
 /**
- * Verifica se todas as características realmente
- * importantes da busca aparecem no produto.
+ * Verifica apenas características que realmente devem
+ * aparecer no produto para que a correspondência seja segura.
+ *
+ * "tipo 1" e "tipo 2" NÃO são obrigatórios quando ausentes
+ * no título do supermercado. Muitos sites omitem essa informação.
+ * Se ambos aparecerem e forem diferentes, o conflito já é tratado
+ * por possuiConflitoDeFlags().
  */
-function possuiFlagsObrigatorias(flagsBusca, flagsProduto) {
+function possuiFlagsObrigatorias(
+  flagsBusca,
+  flagsProduto
+) {
   const flagsObrigatorias = [
     "integral",
     "semidesnatado",
@@ -110,8 +134,6 @@ function possuiFlagsObrigatorias(flagsBusca, flagsProduto) {
     "rajado",
     "fradinho",
     "parboilizado",
-    "tipo 1",
-    "tipo 2",
     "espaguete",
     "penne",
     "parafuso",
@@ -139,12 +161,14 @@ function possuiFlagsObrigatorias(flagsBusca, flagsProduto) {
 /**
  * Valida se o produto realmente corresponde à busca.
  *
- * Regras principais:
+ * Regras:
  * - categoria diferente: rejeita;
  * - marca diferente: rejeita;
  * - peso diferente: rejeita;
- * - tipo ou característica conflitante: rejeita;
- * - característica obrigatória ausente: rejeita.
+ * - flags conflitantes: rejeita;
+ * - característica realmente obrigatória ausente: rejeita;
+ * - detalhes frequentemente omitidos, como "tipo 1",
+ *   ficam para o score decidir.
  */
 function validarCorrespondencia(
   termoBusca,
@@ -171,33 +195,27 @@ function validarCorrespondencia(
   if (
     buscado.categoria &&
     encontrado.categoria &&
-    buscado.categoria !== encontrado.categoria
+    buscado.categoria !==
+      encontrado.categoria
   ) {
     return false;
   }
 
   /*
-   * Se a busca possui categoria conhecida,
-   * mas o produto não possui nenhuma categoria,
-   * não rejeitamos automaticamente.
-   *
-   * Isso evita perder produtos cujo título é curto.
-   */
-
-  /*
    * Marca
    *
-   * Exemplo:
-   * busca = Patéko
-   * produto = Vapza
-   * resultado = rejeitado
+   * Se a busca informa marca, o produto precisa
+   * ter a mesma marca reconhecida.
    */
   if (buscado.marca) {
     if (!encontrado.marca) {
       return false;
     }
 
-    if (buscado.marca !== encontrado.marca) {
+    if (
+      buscado.marca !==
+      encontrado.marca
+    ) {
       return false;
     }
   }
@@ -215,14 +233,6 @@ function validarCorrespondencia(
   ) {
     return false;
   }
-
-  /*
-   * Se a busca informa peso e o produto não apresenta
-   * peso no nome, deixamos o score decidir.
-   *
-   * Isso evita rejeitar produtos cujo título do site
-   * omite a quantidade.
-   */
 
   const flagsBusca =
     buscado.flags || [];
@@ -246,7 +256,7 @@ function validarCorrespondencia(
 
   /*
    * Exemplo:
-   * busca = leite zero lactose
+   * busca = leite semidesnatado
    * produto = leite integral comum
    */
   if (
