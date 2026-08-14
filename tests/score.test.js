@@ -109,3 +109,13 @@ test("EAN exato recebe prioridade absoluta", () => {
   assert.equal(scoreExato, 10000);
   assert.ok(scoreExato > scoreOutro);
 });
+
+test("Arroz Vasconcelos vence Arroz Patéko mesmo com o mesmo peso", () => {
+  deveVencer(
+    "ARROZ AGULHINHA VASCONCELOS 2kg TIPO 1",
+    produto("Arroz Agulhinha Vasconcelos 2kg Tpo 1", "7898949924555"),
+    produto("Arroz Patéko Pacote 2kg", "7896086419842"),
+    "Vasconcelos deveria vencer Patéko"
+  );
+});
+

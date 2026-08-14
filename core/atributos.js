@@ -1,599 +1,467 @@
-const { normalizarTexto } = require("../utils/texto");
-const { extrairPeso } = require("../utils/peso");
-
-/**
- * Verifica se o texto contém uma expressão completa.
- *
- * Isso evita confusões como:
- * "sal" dentro de outra palavra ou
- * "l" dentro de "leite".
- */
-function contemExpressao(texto, expressao) {
-  const textoNormalizado = ` ${normalizarTexto(texto)} `;
-  const expressaoNormalizada = ` ${normalizarTexto(expressao)} `;
-
-  return textoNormalizado.includes(expressaoNormalizada);
+function normalizarTexto(valor) {
+  return String(valor || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-/**
- * Detecta a categoria principal do produto.
- */
-function detectarCategoria(texto) {
-  const categorias = [
-    {
-      nome: "leite",
-      termos: [
-        "leite",
-        "bebida lactea"
-      ]
-    },
-    {
-      nome: "oleo",
-      termos: [
-        "oleo"
-      ]
-    },
-    {
-      nome: "feijao",
-      termos: [
-        "feijao"
-      ]
-    },
-    {
-      nome: "arroz",
-      termos: [
-        "arroz"
-      ]
-    },
-    {
-      nome: "refrigerante",
-      termos: [
-        "refrigerante",
-        "coca cola",
-        "coca-cola",
-        "guarana",
-        "soda"
-      ]
-    },
-    {
-      nome: "macarrao",
-      termos: [
-        "macarrao",
-        "massa alimenticia"
-      ]
-    },
-    {
-      nome: "acucar",
-      termos: [
-        "acucar"
-      ]
-    },
-    {
-      nome: "manteiga",
-      termos: [
-        "manteiga"
-      ]
-    },
-    {
-      nome: "margarina",
-      termos: [
-        "margarina"
-      ]
-    },
-    {
-      nome: "requeijao",
-      termos: [
-        "requeijao"
-      ]
-    },
-    {
-      nome: "cafe",
-      termos: [
-        "cafe"
-      ]
-    },
-    {
-      nome: "farinha",
-      termos: [
-        "farinha"
-      ]
-    },
-    {
-      nome: "biscoito",
-      termos: [
-        "biscoito",
-        "bolacha"
-      ]
-    },
-    {
-      nome: "achocolatado",
-      termos: [
-        "achocolatado"
-      ]
-    },
-    {
-      nome: "molho",
-      termos: [
-        "molho"
-      ]
-    },
-    {
-      nome: "extrato de tomate",
-      termos: [
-        "extrato de tomate"
-      ]
-    },
-    {
-      nome: "creme de leite",
-      termos: [
-        "creme de leite"
-      ]
-    },
-    {
-      nome: "leite condensado",
-      termos: [
-        "leite condensado"
-      ]
-    }
-  ];
-
-  /*
-   * Categorias mais específicas precisam ser verificadas
-   * antes das categorias genéricas.
-   */
-  const categoriasEspecificas = [
-    {
-      nome: "leite condensado",
-      termos: ["leite condensado"]
-    },
-    {
-      nome: "creme de leite",
-      termos: ["creme de leite"]
-    },
-    {
-      nome: "extrato de tomate",
-      termos: ["extrato de tomate"]
-    },
-    ...categorias
-  ];
-
-  for (const categoria of categoriasEspecificas) {
-    const encontrou = categoria.termos.some((termo) =>
-      contemExpressao(texto, termo)
-    );
-
-    if (encontrou) {
-      return categoria.nome;
-    }
-  }
-
-  return null;
+function contemTermo(texto, termo) {
+  const t = ` ${normalizarTexto(texto)} `;
+  const alvo = ` ${normalizarTexto(termo)} `;
+  return t.includes(alvo);
 }
 
-/**
- * Detecta a marca e devolve sempre o nome padronizado.
- *
- * Exemplo:
- * "coca-cola" e "coca cola" viram "coca cola".
- */
-function detectarMarca(texto) {
-  const marcas = [
-    {
-      nome: "piracanjuba",
-      termos: ["piracanjuba"]
-    },
-    {
-      nome: "italac",
-      termos: ["italac"]
-    },
-    {
-      nome: "camil",
-      termos: ["camil"]
-    },
-    {
-      nome: "tio joao",
-      termos: ["tio joao"]
-    },
-    {
-      nome: "pilao",
-      termos: ["pilao"]
-    },
-    {
-      nome: "renata",
-      termos: ["renata"]
-    },
-    {
-      nome: "liza",
-      termos: ["liza"]
-    },
-    {
-      nome: "uniao",
-      termos: ["uniao"]
-    },
-    {
-      nome: "aviacao",
-      termos: ["aviacao"]
-    },
-    {
-      nome: "coca cola",
-      termos: [
-        "coca cola",
-        "coca-cola"
-      ]
-    },
-    {
-      nome: "pateko",
-      termos: [
-        "pateko",
-        "patéko"
-      ]
-    },
-    {
-      nome: "vapza",
-      termos: ["vapza"]
-    },
-    {
-      nome: "broto legal",
-      termos: ["broto legal"]
-    },
-    {
-      nome: "emporio sao joao",
-      termos: ["emporio sao joao"]
-    },
-    {
-      nome: "solito",
-      termos: ["solito"]
-    },
-    {
-      nome: "denadai",
-      termos: ["denadai"]
-    },
-    {
-      nome: "serralat",
-      termos: ["serralat"]
-    },
-    {
-      nome: "xando",
-      termos: ["xando"]
-    },
-    {
-      nome: "itambe",
-      termos: ["itambe"]
-    },
-    {
-      nome: "parmalat",
-      termos: ["parmalat"]
-    },
-    {
-      nome: "jussara",
-      termos: ["jussara"]
-    },
-    {
-      nome: "ninho",
-      termos: ["ninho"]
-    },
-    {
-      nome: "nestle",
-      termos: ["nestle"]
-    },
-    {
-      nome: "moca",
-      termos: ["moca"]
-    },
-    {
-      nome: "moça",
-      termos: ["moça"]
-    },
-    {
-      nome: "itambe",
-      termos: ["itambe"]
-    },
-    {
-      nome: "qualy",
-      termos: ["qualy"]
-    },
-    {
-      nome: "delicia",
-      termos: ["delicia"]
-    },
-    {
-      nome: "primor",
-      termos: ["primor"]
-    },
-    {
-      nome: "dona benta",
-      termos: ["dona benta"]
-    },
-    {
-      nome: "yoki",
-      termos: ["yoki"]
-    },
-    {
-      nome: "predilecta",
-      termos: ["predilecta"]
-    },
-    {
-      nome: "quero",
-      termos: ["quero"]
-    },
-    {
-      nome: "heinz",
-      termos: ["heinz"]
-    },
-    {
-      nome: "bauducco",
-      termos: ["bauducco"]
-    },
-    {
-      nome: "piraque",
-      termos: ["piraque"]
-    },
-    {
-      nome: "trakinas",
-      termos: ["trakinas"]
-    },
-    {
-      nome: "toddy",
-      termos: ["toddy"]
-    },
-    {
-      nome: "nescau",
-      termos: ["nescau"]
-    }
-  ];
+function extrairPeso(texto) {
+  const t = normalizarTexto(texto);
 
-  /*
-   * Marcas compostas devem ser verificadas primeiro.
-   */
-  const marcasOrdenadas = [...marcas].sort(
-    (a, b) => b.nome.length - a.nome.length
+  const match = t.match(
+    /(\d+(?:[.,]\d+)?)\s*(kg|g|mg|ml|l)\b/
   );
 
-  for (const marca of marcasOrdenadas) {
-    const encontrou = marca.termos.some((termo) =>
-      contemExpressao(texto, termo)
-    );
+  if (!match) {
+    return null;
+  }
 
-    if (encontrou) {
-      return normalizarTexto(marca.nome);
+  const quantidade = Number(
+    String(match[1]).replace(",", ".")
+  );
+
+  if (!Number.isFinite(quantidade)) {
+    return null;
+  }
+
+  const unidade = match[2];
+
+  switch (unidade) {
+    case "kg":
+      return quantidade * 1000;
+    case "g":
+      return quantidade;
+    case "mg":
+      return quantidade / 1000;
+    case "l":
+      return quantidade * 1000;
+    case "ml":
+      return quantidade;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Detecta quantidade de unidades/multipack.
+ *
+ * Exemplos:
+ * 3x90g           -> 3
+ * 3 x 90g         -> 3
+ * 6 unidades      -> 6
+ * pack 4          -> 4
+ * leve 6 pague 5  -> 6
+ * 500ml com 6     -> 6
+ */
+function extrairQuantidadeUnidades(texto) {
+  const t = normalizarTexto(texto);
+
+  let match = t.match(
+    /\b(\d{1,2})\s*x\s*\d+(?:[.,]\d+)?\s*(?:kg|g|mg|ml|l)\b/
+  );
+
+  if (match) {
+    return Number(match[1]);
+  }
+
+  match = t.match(
+    /\b(\d{1,2})\s*(?:unidades|unidade|unds|und|un)\b/
+  );
+
+  if (match) {
+    return Number(match[1]);
+  }
+
+  match = t.match(
+    /\b(?:pack|pacote|kit)\s*(?:com\s*)?(\d{1,2})\b/
+  );
+
+  if (match) {
+    return Number(match[1]);
+  }
+
+  match = t.match(
+    /\bleve\s*(\d{1,2})\b/
+  );
+
+  if (match) {
+    return Number(match[1]);
+  }
+
+  /*
+   * Exemplos:
+   * "Detergente Ypê Clear 500ml com 6"
+   * "500ml c/ 6"
+   */
+  match = t.match(
+    /\b\d+(?:[.,]\d+)?\s*(?:kg|g|mg|ml|l)\s*(?:com|c)\s*(\d{1,2})\b/
+  );
+
+  if (match) {
+    return Number(match[1]);
+  }
+
+  /*
+   * Exemplos:
+   * "com 6 unidades"
+   * "com 6"
+   */
+  match = t.match(
+    /\bcom\s*(\d{1,2})(?:\s*(?:unidades|unidade|unds|und|un))?\b/
+  );
+
+  if (match) {
+    return Number(match[1]);
+  }
+
+  return 1;
+}
+
+const MARCAS = [
+  // Leites e laticínios
+  ["piracanjuba", "piracanjuba"],
+  ["italac", "italac"],
+  ["itambe", "itambe"],
+  ["lider", "lider"],
+  ["mococa", "mococa"],
+  ["hercules", "hercules"],
+  ["parmalat", "parmalat"],
+  ["jussara", "jussara"],
+  ["nilza", "nilza"],
+  ["letti", "letti"],
+  ["leti", "leti"],
+
+  // Arroz, feijão, açúcar e mercearia
+  ["prato fino", "prato fino"],
+  ["tio joao", "tio joao"],
+  ["camil", "camil"],
+  ["broto legal", "broto legal"],
+  ["emporio sao joao", "emporio sao joao"],
+  ["serrazul", "serrazul"],
+  ["serra azul", "serrazul"],
+  ["4r", "4r"],
+  ["solito", "solito"],
+  ["denadai", "denadai"],
+  ["ubirama", "ubirama"],
+  ["vasconcelos", "vasconcelos"],
+  ["carunchao", "carunchao"],
+  ["pateko", "pateko"],
+  ["zorzo", "zorzo"],
+  ["caravelas", "caravelas"],
+  ["uniao", "uniao"],
+  ["guarani", "guarani"],
+  ["native", "native"],
+  ["santa isabel", "santa isabel"],
+  ["7 povos", "7 povos"],
+
+  // Cafés
+  ["3 coracoes", "3 coracoes"],
+  ["tres coracoes", "3 coracoes"],
+  ["la sante", "la sante"],
+  ["lasante", "la sante"],
+  ["melitta", "melitta"],
+  ["caboclo", "caboclo"],
+  ["pilao", "pilao"],
+  ["cafe pele", "pele"],
+  ["pele", "pele"],
+  ["brasileiro", "brasileiro"],
+  ["fort", "fort"],
+  ["lor", "lor"],
+
+  // Refrigerantes
+  ["coca cola", "coca cola"],
+  ["coca-cola", "coca cola"],
+  ["guarana antarctica", "guarana antarctica"],
+  ["antarctica", "antarctica"],
+  ["pepsi", "pepsi"],
+  ["sprite", "sprite"],
+  ["fanta", "fanta"],
+  ["itubaina", "itubaina"],
+
+  // Limpeza
+  ["triex", "triex"],
+  ["ype", "ype"],
+  ["limpol", "limpol"],
+  ["minuano", "minuano"],
+  ["omo", "omo"],
+  ["tixan", "tixan"],
+  ["surf", "surf"],
+  ["brilhante", "brilhante"],
+  ["ala", "ala"],
+  ["urca", "urca"],
+
+  // Higiene
+  ["colgate", "colgate"],
+  ["oral b", "oral b"],
+  ["oral-b", "oral b"],
+  ["closeup", "closeup"],
+  ["close up", "closeup"],
+  ["sensodyne", "sensodyne"],
+  ["sorriso", "sorriso"],
+
+  // Papel higiênico
+  ["neve", "neve"],
+  ["personal", "personal"],
+  ["mili", "mili"],
+  ["duetto", "duetto"],
+  ["familiar", "familiar"],
+  ["cotton", "cotton"],
+
+  ["renata", "renata"],
+  ["liza", "liza"],
+  ["aviacao", "aviacao"]
+];
+
+function detectarMarca(texto) {
+  const t = normalizarTexto(texto);
+
+  for (const [alias, canonica] of MARCAS) {
+    if (contemTermo(t, alias)) {
+      return canonica;
     }
   }
 
   return null;
 }
 
-/**
- * Detecta características importantes do produto.
- *
- * As flags são padronizadas para evitar duplicidade:
- * "semi desnatado" e "semidesnatado"
- * sempre viram "semidesnatado".
- */
-function detectarFlags(texto) {
-  const gruposFlags = [
-    {
-      nome: "integral",
-      termos: ["integral"]
-    },
-    {
-      nome: "semidesnatado",
-      termos: [
-        "semidesnatado",
-        "semi desnatado"
-      ]
-    },
-    {
-      nome: "desnatado",
-      termos: ["desnatado"]
-    },
-    {
-      nome: "zero lactose",
-      termos: [
-        "zero lactose",
-        "sem lactose"
-      ]
-    },
-    {
-      nome: "com lactose",
-      termos: [
-        "com lactose"
-      ]
-    },
-    {
-      nome: "protein",
-      termos: [
-        "protein",
-        "proteina",
-        "proteico"
-      ]
-    },
-    {
-      nome: "a2",
-      termos: [
-        "a2"
-      ]
-    },
-    {
-      nome: "girassol",
-      termos: [
-        "girassol"
-      ]
-    },
-    {
-      nome: "soja",
-      termos: [
-        "soja"
-      ]
-    },
-    {
-      nome: "carioca",
-      termos: [
-        "carioca"
-      ]
-    },
-    {
-      nome: "preto",
-      termos: [
-        "preto"
-      ]
-    },
-    {
-      nome: "branco",
-      termos: [
-        "branco"
-      ]
-    },
-    {
-      nome: "rajado",
-      termos: [
-        "rajado"
-      ]
-    },
-    {
-      nome: "fradinho",
-      termos: [
-        "fradinho"
-      ]
-    },
-    {
-      nome: "parboilizado",
-      termos: [
-        "parboilizado"
-      ]
-    },
-    {
-      nome: "tipo 1",
-      termos: [
-        "tipo 1",
-        "tipo i"
-      ]
-    },
-    {
-      nome: "tipo 2",
-      termos: [
-        "tipo 2",
-        "tipo ii"
-      ]
-    },
-    {
-      nome: "espaguete",
-      termos: [
-        "espaguete",
-        "spaghetti"
-      ]
-    },
-    {
-      nome: "penne",
-      termos: [
-        "penne"
-      ]
-    },
-    {
-      nome: "parafuso",
-      termos: [
-        "parafuso",
-        "fusilli"
-      ]
-    },
-    {
-      nome: "zero",
-      termos: [
-        "zero"
-      ]
-    },
-    {
-      nome: "diet",
-      termos: [
-        "diet"
-      ]
-    },
-    {
-      nome: "light",
-      termos: [
-        "light"
-      ]
-    },
-    {
-      nome: "sem sal",
-      termos: [
-        "sem sal"
-      ]
-    },
-    {
-      nome: "com sal",
-      termos: [
-        "com sal"
-      ]
-    },
-    {
-      nome: "tradicional",
-      termos: [
-        "tradicional"
-      ]
-    },
-    {
-      nome: "extra virgem",
-      termos: [
-        "extra virgem"
-      ]
-    },
-    {
-      nome: "soluvel",
-      termos: [
-        "soluvel"
-      ]
-    },
-    {
-      nome: "descafeinado",
-      termos: [
-        "descafeinado"
-      ]
-    }
-  ];
+function detectarCategoria(texto) {
+  const t = normalizarTexto(texto);
 
+  if (contemTermo(t, "papel higienico")) {
+    return "papel higienico";
+  }
+
+  if (contemTermo(t, "creme dental")) {
+    return "creme dental";
+  }
+
+  if (
+    contemTermo(t, "sabao em po") ||
+    (t.includes("lava roupas") && contemTermo(t, "po"))
+  ) {
+    return "sabao em po";
+  }
+
+  if (
+    contemTermo(t, "detergente") ||
+    t.includes("lava loucas")
+  ) {
+    return "detergente";
+  }
+
+  if (
+    contemTermo(t, "refrigerante") ||
+    t.includes("coca cola") ||
+    contemTermo(t, "pepsi") ||
+    contemTermo(t, "sprite") ||
+    contemTermo(t, "fanta") ||
+    t.includes("guarana antarctica")
+  ) {
+    return "refrigerante";
+  }
+
+  if (contemTermo(t, "leite")) return "leite";
+  if (contemTermo(t, "oleo")) return "oleo";
+  if (contemTermo(t, "feijao")) return "feijao";
+  if (contemTermo(t, "arroz")) return "arroz";
+  if (contemTermo(t, "cafe")) return "cafe";
+  if (contemTermo(t, "macarrao")) return "macarrao";
+  if (contemTermo(t, "acucar")) return "acucar";
+  if (contemTermo(t, "manteiga")) return "manteiga";
+  if (contemTermo(t, "requeijao")) return "requeijao";
+
+  return null;
+}
+
+function adicionarFlag(flags, flag) {
+  if (!flags.includes(flag)) {
+    flags.push(flag);
+  }
+}
+
+function detectarFlags(texto) {
+  const t = normalizarTexto(texto);
   const flags = [];
 
-  for (const grupo of gruposFlags) {
-    const encontrou = grupo.termos.some((termo) =>
-      contemExpressao(texto, termo)
-    );
+  if (
+    t.includes("semidesnatado") ||
+    t.includes("semi desnatado")
+  ) {
+    adicionarFlag(flags, "semidesnatado");
+  } else if (contemTermo(t, "desnatado")) {
+    adicionarFlag(flags, "desnatado");
+  } else if (contemTermo(t, "integral")) {
+    adicionarFlag(flags, "integral");
+  }
 
-    if (encontrou && !flags.includes(grupo.nome)) {
-      flags.push(grupo.nome);
+  if (
+    t.includes("zero lactose") ||
+    t.includes("sem lactose")
+  ) {
+    adicionarFlag(flags, "zero lactose");
+  }
+
+  if (t.includes("com lactose")) {
+    adicionarFlag(flags, "com lactose");
+  }
+
+  if (
+    contemTermo(t, "protein") ||
+    contemTermo(t, "proteina")
+  ) {
+    adicionarFlag(flags, "protein");
+  }
+
+  if (contemTermo(t, "a2")) {
+    adicionarFlag(flags, "a2");
+  }
+
+  for (const tipo of [
+    "carioca",
+    "preto",
+    "branco",
+    "rajado",
+    "fradinho"
+  ]) {
+    if (contemTermo(t, tipo)) {
+      adicionarFlag(flags, tipo);
     }
   }
 
-  /*
-   * Se existe "zero lactose", não adicionamos a flag
-   * genérica "zero", pois seria redundante.
-   */
+  if (contemTermo(t, "parboilizado")) {
+    adicionarFlag(flags, "parboilizado");
+  }
+
+  if (/\btipo\s*1\b/.test(t)) {
+    adicionarFlag(flags, "tipo 1");
+  }
+
+  if (/\btipo\s*2\b/.test(t)) {
+    adicionarFlag(flags, "tipo 2");
+  }
+
+  for (const tipo of [
+    "refinado",
+    "cristal",
+    "demerara",
+    "mascavo",
+    "organico"
+  ]) {
+    if (contemTermo(t, tipo)) {
+      adicionarFlag(flags, tipo);
+    }
+  }
+
+  for (const tipo of ["girassol", "soja"]) {
+    if (contemTermo(t, tipo)) {
+      adicionarFlag(flags, tipo);
+    }
+  }
+
+  for (const formato of [
+    "espaguete",
+    "penne",
+    "parafuso"
+  ]) {
+    if (contemTermo(t, formato)) {
+      adicionarFlag(flags, formato);
+    }
+  }
+
+  if (contemTermo(t, "diet")) adicionarFlag(flags, "diet");
+  if (contemTermo(t, "light")) adicionarFlag(flags, "light");
+
   if (
-    flags.includes("zero lactose") &&
-    flags.includes("zero")
+    contemTermo(t, "zero") &&
+    !t.includes("zero lactose")
   ) {
-    flags.splice(flags.indexOf("zero"), 1);
+    adicionarFlag(flags, "zero");
+  }
+
+  if (t.includes("sem sal")) adicionarFlag(flags, "sem sal");
+  if (t.includes("com sal")) adicionarFlag(flags, "com sal");
+
+  if (contemTermo(t, "soluvel")) adicionarFlag(flags, "soluvel");
+  if (contemTermo(t, "descafeinado")) adicionarFlag(flags, "descafeinado");
+  if (contemTermo(t, "tradicional")) adicionarFlag(flags, "tradicional");
+
+  if (
+    t.includes("extra forte") ||
+    t.includes("extraforte")
+  ) {
+    adicionarFlag(flags, "extra forte");
+  }
+
+  if (t.includes("extra virgem")) {
+    adicionarFlag(flags, "extra virgem");
   }
 
   return flags;
 }
 
-/**
- * Detecta todos os atributos importantes do texto.
- */
+function detectarVariante(texto) {
+  const t = normalizarTexto(texto);
+
+  const variantes = [
+    ["anti tartaro", "anti tartaro"],
+    ["antitartaro", "anti tartaro"],
+    ["advanced fresh", "advanced fresh"],
+    ["whitening", "whitening"],
+    ["branqueador", "whitening"],
+    ["tripla acao", "tripla acao"],
+    ["total 12", "total 12"],
+    ["titanium", "titanium"],
+    ["menta", "menta"],
+    ["hortela", "menta"],
+    ["coco", "coco"],
+    ["clear", "clear"],
+    ["maca", "maca"],
+    ["neutro", "neutro"],
+    ["limao", "limao"],
+    ["tradicional", "tradicional"],
+    ["extra forte", "extra forte"],
+    ["extraforte", "extra forte"]
+  ];
+
+  for (const [alias, canonica] of variantes) {
+    if (contemTermo(t, alias)) {
+      return canonica;
+    }
+  }
+
+  return null;
+}
+
 function detectarAtributos(texto) {
-  const textoNormalizado = normalizarTexto(texto);
+  const flags = detectarFlags(texto);
 
   return {
-    categoria: detectarCategoria(textoNormalizado),
-    marca: detectarMarca(textoNormalizado),
-    peso: extrairPeso(textoNormalizado),
-    flags: detectarFlags(textoNormalizado)
+    categoria: detectarCategoria(texto),
+    tipo: flags[0] || null,
+    marca: detectarMarca(texto),
+    peso: extrairPeso(texto),
+    quantidadeUnidades: extrairQuantidadeUnidades(texto),
+    variante: detectarVariante(texto),
+    flags
   };
 }
 
 module.exports = {
   detectarAtributos,
-  detectarCategoria,
   detectarMarca,
-  detectarFlags
+  detectarCategoria,
+  detectarFlags,
+  detectarVariante,
+  extrairPeso,
+  extrairQuantidadeUnidades,
+  normalizarTexto
 };
