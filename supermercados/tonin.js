@@ -307,18 +307,30 @@ function converterParaFormatoInterno(produto) {
     ean ||
     null;
 
-  const price = converterNumero(
+  // A API do Tonin retorna os valores monetários em centavos.
+  // Ex.: 1469 representa R$ 14,69.
+  const priceBruto = converterNumero(
     produto.preco ??
     produto.price ??
     produto.valor
   );
 
-  const listPrice =
+  const listPriceBruto =
     converterNumero(
       produto.preco_de ??
       produto.preco_original ??
       produto.listPrice
-    ) || price;
+    );
+
+  const price =
+    Number.isFinite(priceBruto)
+      ? priceBruto / 100
+      : null;
+
+  const listPrice =
+    Number.isFinite(listPriceBruto)
+      ? listPriceBruto / 100
+      : price;
 
   const available =
     produto.disponivel !== false &&
