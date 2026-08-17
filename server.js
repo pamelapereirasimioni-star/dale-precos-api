@@ -95,6 +95,16 @@ function logDetalhado(...argumentos) {
   }
 }
 
+function normalizarCep(cep) {
+  const somenteDigitos =
+    String(cep || "").replace(/\D/g, "");
+
+  return somenteDigitos.length === 8
+    ? somenteDigitos
+    : null;
+}
+
+
 function criarIdentificadorConsulta(
   termoBusca,
   eanBuscado
@@ -131,11 +141,13 @@ const cacheConsultas = new Map();
 
 function gerarChaveCache(
   termoBusca,
-  eanBuscado
+  eanBuscado,
+  cep
 ) {
   return [
     limparNomeBusca(termoBusca || ""),
-    String(eanBuscado || "").trim()
+    String(eanBuscado || "").trim(),
+    String(cep || "").trim()
   ].join("|");
 }
 
@@ -333,7 +345,8 @@ function normalizarProdutoRecebido(
 
 async function buscarEmTodosMercados(
   termoBusca,
-  eanBuscado
+  eanBuscado,
+  cep
 ) {
   const identificador =
     criarIdentificadorConsulta(
@@ -346,7 +359,8 @@ async function buscarEmTodosMercados(
   const chaveCache =
     gerarChaveCache(
       termoBusca,
-      eanBuscado
+      eanBuscado,
+      cep
     );
 
   const cache = obterDoCache(chaveCache);
@@ -375,7 +389,8 @@ async function buscarEmTodosMercados(
       const resultado =
         await supermercado.buscarProduto(
           termoBusca,
-          eanBuscado
+          eanBuscado,
+          cep
         );
 
       const duracao =
@@ -632,6 +647,7 @@ app.get(
   async (req, res) => {
     const produto = req.query.q;
     const ean = req.query.ean;
+    const cep = normalizarCep(req.query.cep);
 
     if (!produto && !ean) {
       return res.status(400).json({
@@ -653,7 +669,8 @@ app.get(
           const produtos =
             await buscarEmTodosMercados(
               termoBusca,
-              ean
+              ean,
+              cep
             );
 
           return res.json({
@@ -727,6 +744,17 @@ app.post(
         );
 
         try {
+          const cep =
+            normalizarCep(
+              req.body?.cep ||
+              req.body?.postalCode
+            );
+
+          console.log(
+            `[BATCH ${identificadorRequisicao}] CEP:`,
+            cep || "não informado"
+          );
+
           const produtosRecebidos =
             Array.isArray(
               req.body?.products
@@ -742,6 +770,7 @@ app.post(
                 "Nenhum produto foi informado.",
 
               exemplo: {
+                cep: "14096350",
                 products: [
                   {
                     nome:
@@ -823,7 +852,8 @@ app.post(
                 const encontrados =
                   await buscarEmTodosMercados(
                     produto.termoBusca,
-                    produto.ean
+                    produto.ean,
+                    cep
                   );
 
                 const formatados = [];
