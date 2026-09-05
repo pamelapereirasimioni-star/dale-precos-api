@@ -18,6 +18,10 @@ const {
   buscarProduto: buscarTonin
 } = require("./supermercados/tonin");
 
+const {
+  buscarProduto: buscarBigCompra
+} = require("./supermercados/bigcompra");
+
 const app = express();
 
 /*
@@ -52,6 +56,11 @@ const TONIN_ENABLED =
   String(
     process.env.TONIN_ENABLED || "false"
   ).toLowerCase() === "true";
+
+const BIGCOMPRA_ENABLED = Boolean(
+  process.env.SUPABASE_URL &&
+  process.env.SUPABASE_SECRET_KEY
+);
 
 const LOG_DETALHADO =
   String(
@@ -256,6 +265,13 @@ function obterSupermercadosAtivos() {
     supermercados.push({
       id: "tonin",
       buscarProduto: buscarTonin
+    });
+  }
+
+  if (BIGCOMPRA_ENABLED) {
+    supermercados.push({
+      id: "bigcompra",
+      buscarProduto: buscarBigCompra
     });
   }
 
@@ -514,6 +530,50 @@ function formatarResultadoBatch(
 
     url:
       resultado.url ||
+      null,
+
+    offerType:
+      resultado.offerType ||
+      null,
+
+    offerLabel:
+      resultado.offerLabel ||
+      null,
+
+    comboQuantity:
+      Number.isFinite(Number(resultado.comboQuantity))
+        ? Number(resultado.comboQuantity)
+        : null,
+
+    comboPrice:
+      Number.isFinite(Number(resultado.comboPrice))
+        ? Number(resultado.comboPrice)
+        : null,
+
+    unitEquivalentPrice:
+      Number.isFinite(Number(resultado.unitEquivalentPrice))
+        ? Number(resultado.unitEquivalentPrice)
+        : null,
+
+    limitQuantity:
+      Number.isFinite(Number(resultado.limitQuantity))
+        ? Number(resultado.limitQuantity)
+        : null,
+
+    limitType:
+      resultado.limitType ||
+      null,
+
+    validFrom:
+      resultado.validFrom ||
+      null,
+
+    validUntil:
+      resultado.validUntil ||
+      null,
+
+    offerSource:
+      resultado.offerSource ||
       null,
 
     quantity:
@@ -1065,6 +1125,11 @@ app.listen(
     console.log(
       "Tonin ativo:",
       TONIN_ENABLED
+    );
+
+    console.log(
+      "Big Compra ativo:",
+      BIGCOMPRA_ENABLED
     );
 
     registrarMemoria(
