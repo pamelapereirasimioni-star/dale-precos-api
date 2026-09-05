@@ -853,6 +853,61 @@ async function buscarProdutoInterno(
       ...encontrados
     ]);
 
+    /*
+     * Quando o DALE já informa um EAN, a busca do Jaú Serve passa a ser
+     * estritamente por esse código. Produtos apenas semelhantes pelo nome
+     * não podem substituir o item solicitado.
+     *
+     * A comparação remove caracteres não numéricos apenas para normalizar
+     * eventuais formatos de entrada, sem alterar o EAN efetivamente retornado.
+     */
+    const eanNormalizado = String(eanBuscado || "")
+      .replace(/\D/g, "");
+
+    if (eanNormalizado) {
+      const candidatoExato = produtos.find(
+        (produto) =>
+          String(
+            produto.items?.[0]?.ean || ""
+          )
+            .replace(/\D/g, "") ===
+          eanNormalizado
+      );
+
+      if (candidatoExato) {
+        melhor = candidatoExato;
+        melhorScore = calcularPontuacao(
+          termoBusca,
+          candidatoExato,
+          eanBuscado
+        );
+
+        console.log(
+          "Jaú Serve: EAN exato encontrado; encerrando consultas.",
+          {
+            eanBuscado,
+            produto:
+              candidatoExato.productName ||
+              candidatoExato.productTitle,
+            score: melhorScore
+          }
+        );
+
+        break;
+      }
+
+      console.log(
+        "Jaú Serve: EAN exato ainda não encontrado nesta consulta.",
+        {
+          termo,
+          eanBuscado,
+          candidatos: produtos.length
+        }
+      );
+
+      continue;
+    }
+
     const candidato =
       escolherMelhorProduto(
         produtos,
@@ -906,6 +961,46 @@ async function buscarProdutoInterno(
 
   produtos =
     removerDuplicados(produtos);
+
+  /*
+   * Proteção final: se foi solicitado um EAN e nenhuma correspondência
+   * exata foi encontrada, o Jaú Serve deve ser tratado como indisponível.
+   * Nunca fazemos fallback para outro EAN apenas por semelhança de nome.
+   */
+  if (eanBuscado) {
+    const eanNormalizado = String(eanBuscado)
+      .replace(/\D/g, "");
+
+    const produtoExato = produtos.find(
+      (produto) =>
+        String(
+          produto.items?.[0]?.ean || ""
+        )
+          .replace(/\D/g, "") ===
+        eanNormalizado
+    );
+
+    if (!produtoExato) {
+      console.log(
+        "Jaú Serve: nenhum produto com EAN exato encontrado; retorno nulo.",
+        {
+          termoBusca,
+          eanBuscado,
+          candidatos: produtos.length,
+          termosExecutados
+        }
+      );
+
+      return null;
+    }
+
+    melhor = produtoExato;
+    melhorScore = calcularPontuacao(
+      termoBusca,
+      produtoExato,
+      eanBuscado
+    );
+  }
 
   if (produtos.length === 0) {
     console.log(
