@@ -1,634 +1,405 @@
-const { chromium } = require('playwright');
-const { criarProduto } = require('../core/produto');
-const fs = require('fs');
-const path = require('path');
+const { limparNomeBusca } = require("../utils/texto");
+const { validarCorrespondencia } = require("../core/validador");
+const { calcularPontuacao } = require("../core/score");
+const { escolherMelhorProduto } = require("../core/escolhedor");
+const { criarProduto } = require("../core/produto");
 
-// ============================================================
-// CONFIGURAÇÃO
-// ============================================================
-
-const CDP_URL = 'http://127.0.0.1:9222';
-
-const MAX_CANDIDATOS_PDP = 8;
-const ESPERA_APOS_NAVEGACAO_MS = 1800;
-
-
-
-// ============================================================
-// UTILIDADES
-// ============================================================
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function normalizar(texto) {
-  return String(texto || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/(\d)\s*litros?\b/g, '$1l')
-    .replace(/(\d)\s*l\b/g, '$1l')
-    .replace(/(\d)\s*kg\b/g, '$1kg')
-    .replace(/(\d)\s*g\b/g, '$1g')
-    .replace(/(\d)\s*ml\b/g, '$1ml')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function corrigirMojibake(texto) {
-  const s = String(texto || '');
-  if (!/[ÃÂ]/.test(s)) return s;
-  try {
-    const corrigido = Buffer.from(s, 'latin1').toString('utf8');
-    return corrigido.includes('�') ? s : corrigido;
-  } catch {
-    return s;
-  }
-}
-
-function palavras(texto) {
-  const ignorar = new Set(['de', 'da', 'do', 'das', 'dos', 'com', 'sem', 'e', 'em', 'para', 'por']);
-  return normalizar(texto)
-    .split(' ')
-    .filter(p => p.length >= 2 && !ignorar.has(p));
-}
-
-function extrairMedidas(texto) {
-  return normalizar(texto).match(/\b\d+(?:[.,]\d+)?(?:ml|l|g|kg)\b/g) || [];
-}
-
-function ehKit(texto) {
-  const t = normalizar(texto);
-  return /\bkit\b/.test(t) || /\b\d+\s*(un|unidade|unidades)\b/.test(t);
-}
-
-const CARACTERISTICAS = [
-  'integral',
-  'desnatado',
-  'semidesnatado',
-  'zero lactose',
-  'sem lactose',
-  'po',
-  'instantaneo',
-  'vegetal',
-  'a2a2',
-  'forti',
-  'vitaminado',
+const HOSTS_VTEX = [
+  "https://master--carrefourbrfood.myvtex.com",
+  "https://carrefourbrfood.vtexcommercestable.com.br"
 ];
 
-function calcularScore(nomeDale, nomeCarrefour) {
-  const daleNormalizado = normalizar(nomeDale);
-  const carrefourNormalizado = normalizar(nomeCarrefour);
-  const palavrasDale = palavras(nomeDale);
-  const palavrasCarrefour = palavras(nomeCarrefour);
-  let score = 0;
-  const motivos = [];
+let hostPreferido = null;
 
-  for (const palavra of palavrasDale) {
-    if (palavrasCarrefour.includes(palavra)) {
-      score += 10;
-      motivos.push(`+10 palavra: ${palavra}`);
-    }
-  }
-
-  const termosFortes = ['piracanjuba', 'ninho', 'carrefour', 'italac', 'itambe', 'xando', 'notco'];
-
-  for (const termo of termosFortes) {
-    const daleTem = daleNormalizado.includes(termo);
-    const carrefourTem = carrefourNormalizado.includes(termo);
-
-    if (daleTem && carrefourTem) {
-      score += 30;
-      motivos.push(`+30 marca/termo: ${termo}`);
-    }
-
-    if (daleTem && !carrefourTem) {
-      score -= 50;
-      motivos.push(`-50 marca ausente: ${termo}`);
-    }
-  }
-
-  const medidasDale = extrairMedidas(nomeDale);
-  const medidasCarrefour = extrairMedidas(nomeCarrefour);
-
-  if (medidasDale.length) {
-    const principal = medidasDale[0];
-    if (medidasCarrefour.includes(principal)) {
-      score += 35;
-      motivos.push(`+35 medida igual: ${principal}`);
-    } else if (medidasCarrefour.length) {
-      score -= 40;
-      motivos.push(`-40 medida diferente: ${medidasCarrefour.join(', ')}`);
-    }
-  }
-
-  for (const caracteristica of CARACTERISTICAS) {
-    const daleTem = daleNormalizado.includes(normalizar(caracteristica));
-    const carrefourTem = carrefourNormalizado.includes(normalizar(caracteristica));
-
-    if (daleTem && carrefourTem) {
-      score += 20;
-      motivos.push(`+20 característica: ${caracteristica}`);
-    }
-    if (!daleTem && carrefourTem) {
-      score -= 15;
-      motivos.push(`-15 característica extra: ${caracteristica}`);
-    }
-    if (daleTem && !carrefourTem) {
-      score -= 25;
-      motivos.push(`-25 característica ausente: ${caracteristica}`);
-    }
-  }
-
-  if (ehKit(nomeDale) === ehKit(nomeCarrefour)) {
-    score += 15;
-    motivos.push('+15 tipo unitário/kit compatível');
-  } else {
-    score -= 80;
-    motivos.push('-80 incompatibilidade kit/unidade');
-  }
-
-  if (daleNormalizado === carrefourNormalizado) {
-    score += 100;
-    motivos.push('+100 nome normalizado idêntico');
-  }
-
-  return { score, motivos };
+function limparCep(cep) {
+  return String(cep || "").replace(/\D/g, "");
 }
 
-// ============================================================
-// DECODIFICADOR REMIX
-// ============================================================
-
-function decodificarRemixTexto(texto) {
-  const d = JSON.parse(String(texto).trim());
-  if (!Array.isArray(d)) throw new Error('Resposta Remix não é um array.');
-
-  const memo = new Map();
-
-  function R(i) {
-    if (i === -1 || i === -2) return undefined;
-    if (i === -3) return NaN;
-    if (i === -4) return Infinity;
-    if (i === -5) return -Infinity;
-    if (typeof i !== 'number' || i < 0 || i >= d.length) return i;
-    if (memo.has(i)) return memo.get(i);
-
-    const v = d[i];
-    if (v === null || typeof v !== 'object') return v;
-
-    if (Array.isArray(v)) {
-      const arr = [];
-      memo.set(i, arr);
-      for (const item of v) arr.push(R(item));
-      return arr;
-    }
-
-    const obj = {};
-    memo.set(i, obj);
-
-    for (const [chaveOriginal, valorIndice] of Object.entries(v)) {
-      const indiceChave = Number(chaveOriginal.replace(/^_/, ''));
-      const chaveReal = d[indiceChave];
-      if (typeof chaveReal === 'string') obj[chaveReal] = R(valorIndice);
-    }
-
-    return obj;
-  }
-
-  return R(0);
+function normalizarTexto(valor) {
+  return String(valor || "").trim();
 }
 
-function procurarTodos(obj, teste, resultados = [], visitados = new Set()) {
-  if (!obj || typeof obj !== 'object') return resultados;
-  if (visitados.has(obj)) return resultados;
-  visitados.add(obj);
+class CookieJar {
+  constructor() {
+    this.cookies = new Map();
+  }
 
-  if (teste(obj)) resultados.push(obj);
+  adicionarDaResposta(resposta) {
+    let valores = [];
 
-  for (const valor of Object.values(obj)) {
-    if (valor && typeof valor === 'object') {
-      procurarTodos(valor, teste, resultados, visitados);
+    if (typeof resposta?.headers?.getSetCookie === "function") {
+      valores = resposta.headers.getSetCookie();
+    } else {
+      const unico = resposta?.headers?.get?.("set-cookie");
+      if (unico) valores = [unico];
+    }
+
+    for (const bruto of valores) {
+      const primeiro = String(bruto || "").split(";")[0];
+      const indice = primeiro.indexOf("=");
+      if (indice <= 0) continue;
+      const nome = primeiro.slice(0, indice).trim();
+      const valor = primeiro.slice(indice + 1).trim();
+      if (nome) this.cookies.set(nome, valor);
     }
   }
 
-  return resultados;
-}
-
-function encontrarPrimeiro(obj, teste) {
-  const resultados = procurarTodos(obj, teste);
-  return resultados[0] || null;
-}
-
-function encontrarSellerCarrefour(produto) {
-  return encontrarPrimeiro(
-    produto,
-    obj => typeof obj.sellerName === 'string' && obj.sellerName.toLowerCase().includes('carrefour')
-  );
-}
-
-function extrairPreco(seller) {
-  const oferta = seller?.commertialOffer || seller?.commercialOffer || {};
-  return oferta.calculatedSpotPrice ?? oferta.spotPrice ?? oferta.price ?? oferta.Price ?? null;
-}
-
-function extrairEstoque(seller) {
-  const oferta = seller?.commertialOffer || seller?.commercialOffer || {};
-  return oferta.availableQuantity ?? oferta.AvailableQuantity ?? null;
-}
-
-function extrairGtin(raiz) {
-  const candidatos = procurarTodos(
-    raiz,
-    obj =>
-      (typeof obj.gtin === 'string' && /^\d{8,14}$/.test(obj.gtin)) ||
-      (typeof obj.ean === 'string' && /^\d{8,14}$/.test(obj.ean))
-  );
-
-  for (const obj of candidatos) {
-    if (typeof obj.gtin === 'string' && /^\d{8,14}$/.test(obj.gtin)) return obj.gtin;
-    if (typeof obj.ean === 'string' && /^\d{8,14}$/.test(obj.ean)) return obj.ean;
+  cabecalho() {
+    return [...this.cookies.entries()]
+      .map(([nome, valor]) => `${nome}=${valor}`)
+      .join("; ");
   }
 
+  nomes() {
+    return [...this.cookies.keys()];
+  }
+}
+
+async function requisitarJson(url, options = {}, jar = null) {
+  try {
+    const headers = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "DALE-Precos/1.0",
+      ...(options.headers || {})
+    };
+
+    const cookies = jar?.cabecalho?.();
+    if (cookies) headers.Cookie = cookies;
+
+    const resposta = await fetch(url, { ...options, headers });
+    if (jar) jar.adicionarDaResposta(resposta);
+
+    const texto = await resposta.text().catch(() => "");
+    let data = null;
+    try { data = texto ? JSON.parse(texto) : null; } catch {}
+
+    return { ok: resposta.ok, status: resposta.status, data, texto };
+  } catch (erro) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      texto: "",
+      erro: erro?.message || String(erro)
+    };
+  }
+}
+
+function valorSessao(namespaces, namespace, chave) {
+  return namespaces?.[namespace]?.[chave]?.value ??
+    namespaces?.[namespace]?.[chave]?.Value ?? null;
+}
+
+function ordenarHosts() {
+  if (!hostPreferido) return [...HOSTS_VTEX];
+  return [hostPreferido, ...HOSTS_VTEX.filter((host) => host !== hostPreferido)];
+}
+
+async function criarContextoRegional(cep) {
+  const cepLimpo = limparCep(cep);
+  if (cepLimpo.length !== 8) return null;
+
+  for (const host of ordenarHosts()) {
+    const jar = new CookieJar();
+
+    const criarSessao = await requisitarJson(
+      `${host}/api/sessions`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          public: {
+            country: { value: "BRA" },
+            postalCode: { value: cepLimpo }
+          }
+        })
+      },
+      jar
+    );
+
+    if (!criarSessao.ok) continue;
+
+    const items = [
+      "public.country",
+      "public.postalCode",
+      "public.regionId",
+      "checkout.regionId",
+      "checkout.cartId",
+      "store.channel"
+    ].join(",");
+
+    const lerSessao = await requisitarJson(
+      `${host}/api/sessions?items=${encodeURIComponent(items)}`,
+      { method: "GET" },
+      jar
+    );
+
+    if (!lerSessao.ok) continue;
+
+    const namespaces = lerSessao.data?.namespaces || {};
+    const regionId =
+      valorSessao(namespaces, "checkout", "regionId") ||
+      valorSessao(namespaces, "public", "regionId");
+    const salesChannel = String(
+      valorSessao(namespaces, "store", "channel") || "1"
+    );
+
+    if (!regionId) continue;
+
+    hostPreferido = host;
+
+    const contexto = {
+      host,
+      jar,
+      cep: cepLimpo,
+      regionId,
+      salesChannel,
+      cartId: valorSessao(namespaces, "checkout", "cartId")
+    };
+
+    console.log("Carrefour: contexto regional resolvido.", {
+      host,
+      cep: cepLimpo,
+      regionId,
+      salesChannel,
+      cookies: jar.nomes()
+    });
+
+    return contexto;
+  }
+
+  console.log("Carrefour: não foi possível criar sessão regional VTEX.", { cep: cepLimpo });
   return null;
 }
 
-function extrairProdutoPdp(raiz) {
-  return encontrarPrimeiro(
-    raiz,
-    obj => typeof obj.productName === 'string' && (obj.productId || obj.productReference)
+function extrairProdutos(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.products)) return data.products;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+async function buscarIntelligentSearch(contexto, termo) {
+  if (!contexto || !termo) return [];
+
+  const params = new URLSearchParams({
+    query: String(termo),
+    page: "1",
+    count: "30",
+    country: "BRA",
+    "zip-code": contexto.cep,
+    sc: contexto.salesChannel,
+    regionId: contexto.regionId
+  });
+
+  const resultado = await requisitarJson(
+    `${contexto.host}/api/io/_v/api/intelligent-search/product_search?${params.toString()}`,
+    { method: "GET" },
+    contexto.jar
   );
-}
 
-function extrairLinkProduto(produto) {
-  const possiveis = [
-    produto.link,
-    produto.href,
-    produto.url,
-    produto.productUrl,
-  ].filter(v => typeof v === 'string' && v.length > 0);
-
-  return possiveis[0] || null;
-}
-
-function absolutizarUrl(link) {
-  if (!link) return null;
-  if (/^https?:\/\//i.test(link)) return link;
-  return `https://mercado.carrefour.com.br${link.startsWith('/') ? '' : '/'}${link}`;
-}
-
-// ============================================================
-// CAPTURA DE TODAS AS RESPOSTAS .DATA DURANTE NAVEGAÇÃO
-// ============================================================
-
-async function navegarEColetar(page, url, filtro, esperaMs = 2500) {
-  const capturas = [];
-  const pendentes = new Set();
-
-  const handler = response => {
-    const responseUrl = response.url();
-    if (!filtro(responseUrl, response)) return;
-
-    const tarefa = (async () => {
-      try {
-        const texto = await response.text();
-        capturas.push({
-          url: responseUrl,
-          status: response.status(),
-          texto,
-        });
-      } catch {
-        // Algumas respostas podem não permitir leitura do corpo.
-      }
-    })();
-
-    pendentes.add(tarefa);
-    tarefa.finally(() => pendentes.delete(tarefa));
-  };
-
-  page.on('response', handler);
-
-  try {
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
+  if (!resultado.ok) {
+    console.log("Carrefour: Intelligent Search falhou.", {
+      status: resultado.status,
+      termo: String(termo),
+      host: contexto.host
     });
-
-    await sleep(esperaMs);
-    await Promise.allSettled([...pendentes]);
-    return capturas;
-  } finally {
-    page.off('response', handler);
-  }
-}
-
-function extrairProdutosDasCapturas(capturas) {
-  const produtos = [];
-
-  for (const captura of capturas) {
-    try {
-      const raiz = decodificarRemixTexto(captura.texto);
-      const encontrados = procurarTodos(
-        raiz,
-        obj => typeof obj.productName === 'string' && obj.productReference
-      );
-      produtos.push(...encontrados);
-    } catch {
-      // Nem toda resposta .data possui o mesmo payload Remix.
-    }
+    return [];
   }
 
-  return produtos;
+  return extrairProdutos(resultado.data);
 }
 
-// ============================================================
-// LEITURA DO PDP RENDERIZADO NO PRÓPRIO CHROME
-// ============================================================
+async function buscarPorEAN(contexto, ean) {
+  return ean ? buscarIntelligentSearch(contexto, ean) : [];
+}
 
-async function lerPdpRenderizado(page) {
-  return await page.evaluate(() => {
-    function achatarJsonLd(valor, saida = []) {
-      if (!valor) return saida;
-      if (Array.isArray(valor)) {
-        for (const item of valor) achatarJsonLd(item, saida);
-        return saida;
+async function buscarPorNome(contexto, nome) {
+  const termo = limparNomeBusca(nome);
+  return termo ? buscarIntelligentSearch(contexto, termo) : [];
+}
+
+function sellersCarrefourDoItem(item) {
+  const ids = [];
+
+  for (const seller of item?.sellers || []) {
+    const id = normalizarTexto(seller?.sellerId || seller?.seller);
+    const nome = normalizarTexto(seller?.sellerName || seller?.name).toLowerCase();
+    const pareceCarrefour = nome.includes("carrefour") || id === "1";
+    if (pareceCarrefour && id && !ids.includes(id)) ids.push(id);
+  }
+
+  if (!ids.length) ids.push("1");
+  return ids;
+}
+
+async function simularProduto(contexto, itemId, sellerId, quantidade = 1) {
+  const resultado = await requisitarJson(
+    `${contexto.host}/api/checkout/pub/orderForms/simulation?RnbBehavior=0&sc=${encodeURIComponent(contexto.salesChannel)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        items: [{ id: String(itemId), quantity: quantidade, seller: String(sellerId) }],
+        postalCode: contexto.cep,
+        country: "BRA"
+      })
+    },
+    contexto.jar
+  );
+
+  if (!resultado.ok) return null;
+
+  const resposta = resultado.data;
+  const item = resposta?.items?.[0];
+  if (!item) return null;
+
+  const available = item.availability === "available";
+  const price = typeof item.sellingPrice === "number" ? item.sellingPrice / 100 : null;
+  const listPrice = typeof item.listPrice === "number" ? item.listPrice / 100 : price;
+
+  const pickupDistances = [];
+  for (const info of resposta?.logisticsInfo || []) {
+    for (const sla of info?.slas || []) {
+      if (sla.deliveryChannel === "pickup-in-point" && typeof sla.pickupDistance === "number") {
+        pickupDistances.push(sla.pickupDistance);
       }
-      if (typeof valor === 'object') {
-        saida.push(valor);
-        if (valor['@graph']) achatarJsonLd(valor['@graph'], saida);
-      }
-      return saida;
     }
+  }
 
-    const jsonLd = [];
+  return {
+    sellerId: String(sellerId),
+    available,
+    price,
+    listPrice,
+    pickupDistance: pickupDistances.length ? Math.min(...pickupDistances) : null,
+    priceTags: Array.isArray(item.priceTags) ? item.priceTags : [],
+    messages: Array.isArray(resposta?.messages) ? resposta.messages : []
+  };
+}
 
-    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
-      try {
-        const parsed = JSON.parse(script.textContent || '');
-        achatarJsonLd(parsed, jsonLd);
-      } catch {
-        // ignora JSON-LD inválido
-      }
-    }
+async function buscarOfertaRegional(contexto, item) {
+  const candidatos = [...new Set(sellersCarrefourDoItem(item))];
 
-    const produto = jsonLd.find(obj => {
-      const tipo = obj?.['@type'];
-      return tipo === 'Product' || (Array.isArray(tipo) && tipo.includes('Product'));
-    }) || null;
+  console.log("Carrefour sellers candidatos na sessão regional:", candidatos);
 
-    const offers = Array.isArray(produto?.offers)
-      ? produto.offers[0]
-      : (produto?.offers || null);
+  const simulacoes = await Promise.all(
+    candidatos.map((sellerId) => simularProduto(contexto, item.itemId, sellerId, 1))
+  );
 
-    const textoPagina = document.body?.innerText || '';
+  const ofertas = simulacoes.filter(
+    (oferta) => oferta && oferta.available && typeof oferta.price === "number" && oferta.price > 0
+  );
 
-    const indisponivelPorTexto = /não possui estoque|nao possui estoque|indisponível|indisponivel/i.test(textoPagina);
-    const disponibilidadeSchema = String(offers?.availability || produto?.availability || '');
-    const indisponivelPorSchema = /OutOfStock|Discontinued/i.test(disponibilidadeSchema);
-    const disponivelPorSchema = /InStock/i.test(disponibilidadeSchema);
+  if (!ofertas.length) return null;
 
-    let estoqueStatus = null;
-    if (indisponivelPorTexto || indisponivelPorSchema) estoqueStatus = 0;
-    else if (disponivelPorSchema) estoqueStatus = 1;
+  ofertas.sort((a, b) => {
+    const ad = typeof a.pickupDistance === "number";
+    const bd = typeof b.pickupDistance === "number";
+    if (ad && bd && a.pickupDistance !== b.pickupDistance) return a.pickupDistance - b.pickupDistance;
+    if (ad && !bd) return -1;
+    if (!ad && bd) return 1;
+    return a.price - b.price;
+  });
 
-    const gtin =
-      produto?.gtin14 ||
-      produto?.gtin13 ||
-      produto?.gtin12 ||
-      produto?.gtin8 ||
-      produto?.gtin ||
-      produto?.sku ||
-      null;
+  return ofertas[0];
+}
 
-    const preco =
-      offers?.price ??
-      offers?.lowPrice ??
-      null;
+function localizarItemExato(produto, eanBuscado) {
+  if (!produto?.items?.length) return null;
+  if (!eanBuscado) return produto.items[0];
+  return produto.items.find((item) => String(item.ean || "") === String(eanBuscado)) || null;
+}
 
-    return {
-      productName: produto?.name || null,
-      gtin: gtin != null ? String(gtin) : null,
-      preco: preco != null ? Number(preco) : null,
-      estoque: estoqueStatus,
-      availability: disponibilidadeSchema || null,
-      url: location.href,
-      textoIndisponivel: indisponivelPorTexto,
-    };
+async function montarProdutoRegional(contexto, produto, eanBuscado) {
+  const item = localizarItemExato(produto, eanBuscado);
+  if (!item) return null;
+
+  const oferta = await buscarOfertaRegional(contexto, item);
+
+  if (!oferta) {
+    console.log("Carrefour: produto exato sem oferta disponível na sessão regional.", {
+      cep: contexto.cep,
+      ean: item.ean,
+      itemId: item.itemId,
+      regionId: contexto.regionId,
+      salesChannel: contexto.salesChannel
+    });
+    return null;
+  }
+
+  console.log("Carrefour oferta regional:", {
+    hostVTEX: contexto.host,
+    cep: contexto.cep,
+    regionId: contexto.regionId,
+    salesChannel: contexto.salesChannel,
+    ean: item.ean,
+    itemId: item.itemId,
+    sellerId: oferta.sellerId,
+    price: oferta.price,
+    listPrice: oferta.listPrice
+  });
+
+  return criarProduto({
+    supermarketId: "carrefour",
+    productName: produto.productName || produto.name,
+    ean: item.ean,
+    itemId: item.itemId,
+    sellerId: oferta.sellerId,
+    price: oferta.price,
+    listPrice: oferta.listPrice,
+    available: oferta.available,
+    image: item.images?.[0]?.imageUrl || null,
+    url: produto.link || produto.linkText || null
   });
 }
 
-
-// ============================================================
-// MÓDULO OFICIAL CARREFOUR
-// ============================================================
-
-const BASE_URL = 'https://mercado.carrefour.com.br';
-
-// Mapeamentos confirmados por EAN. Depois isso pode ir para Supabase.
-const PRODUTOS_CONHECIDOS = new Map([
-  ['7898215151708', {
-    itemId: '8253',
-    productReference: '3371689',
-    url: `${BASE_URL}/produto/leite-integral-piracanjuba-1-litro-8253`,
-  }],
-]);
-
-function montarTermosBusca(nome) {
-  const limpo = String(nome || '').trim();
-  const partes = palavras(limpo);
-  const termos = new Set();
-  if (limpo) termos.add(limpo);
-  if (partes.length >= 2) termos.add(partes.join(' '));
-  const medidas = extrairMedidas(limpo);
-  const medida = medidas[0];
-  const fortes = ['piracanjuba','ninho','carrefour','italac','itambe','xando','notco'];
-  const marca = fortes.find(m => normalizar(limpo).includes(m));
-  if (marca && medida) termos.add(`${marca} ${medida}`);
-  if (marca) termos.add(`${partes[0] || ''} ${marca} ${medida || ''}`.replace(/\s+/g,' ').trim());
-  return [...termos].filter(Boolean).slice(0, 4);
-}
-
-async function obterPaginaCarrefour() {
-  const browser = await chromium.connectOverCDP(CDP_URL);
-  const context = browser.contexts()[0];
-  if (!context) throw new Error('Nenhum contexto do Chrome encontrado.');
-  let page = context.pages().find(p => p.url().includes('mercado.carrefour.com.br'));
-  if (!page) {
-    page = await context.newPage();
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  }
-  return { browser, context, page };
-}
-
-function formatarResultado({ ean, nome, pdp, conhecido = null }) {
-  const match = String(pdp?.gtin || '') === String(ean || '');
-  if (!match) return null;
-  const disponivel = pdp.estoque === 1;
-  return {
-    supermercado: 'carrefour',
-    encontrado: true,
-    disponivel,
-    ean: String(ean),
-    nome: corrigirMojibake(pdp.productName || nome || ''),
-    preco: disponivel && pdp.preco != null ? Number(pdp.preco) : null,
-    precoExibido: pdp.preco != null ? Number(pdp.preco) : null,
-    itemId: conhecido?.itemId || null,
-    productReference: conhecido?.productReference || null,
-    url: pdp.url || conhecido?.url || null,
-    seller: 'Carrefour',
-    estoque: pdp.estoque,
-    matchEan: true,
-  };
-}
-
-async function consultarPdpDireto(page, ean, nome, conhecido) {
-  await page.goto(conhecido.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await sleep(2200);
-  const pdp = await lerPdpRenderizado(page);
-  return formatarResultado({ ean, nome, pdp, conhecido });
-}
-
-async function buscarCandidatos(page, produtoDale) {
-  const todos = [];
-  const termos = montarTermosBusca(produtoDale.nome);
-  for (const termo of termos) {
-    const urlPagina = `${BASE_URL}/busca/${encodeURIComponent(termo)}`;
-    try {
-      const capturas = await navegarEColetar(
-        page,
-        urlPagina,
-        responseUrl => responseUrl.includes('mercado.carrefour.com.br/busca/') && responseUrl.includes('.data') && !responseUrl.includes('/busca.data?'),
-        2600
-      );
-      const produtos = extrairProdutosDasCapturas(capturas);
-      for (const produto of produtos) todos.push({ ...produto, termoOrigem: termo });
-    } catch {}
-  }
-  const unicos = [];
-  const vistos = new Set();
-  for (const produto of todos) {
-    const chave = `${produto.productId || '-'}|${produto.productReference || '-'}|${produto.productName || '-'}`;
-    if (!vistos.has(chave)) { vistos.add(chave); unicos.push(produto); }
-  }
-  return unicos.map(produto => {
-    const nome = corrigirMojibake(produto.productName);
-    const { score } = calcularScore(produtoDale.nome, nome);
-    return { produto, nome, score };
-  }).sort((a,b) => b.score - a.score);
-}
-
-async function validarRanking(page, produtoDale, ranking) {
-  const limite = Math.min(MAX_CANDIDATOS_PDP, ranking.length);
-  for (let i = 0; i < limite; i++) {
-    const item = ranking[i];
-    const link = extrairLinkProduto(item.produto);
-    if (!link) continue;
-    try {
-      const url = absolutizarUrl(link);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await sleep(2200);
-      const pdp = await lerPdpRenderizado(page);
-      const resultado = formatarResultado({ ean: produtoDale.ean, nome: produtoDale.nome, pdp });
-      if (resultado) {
-        resultado.productReference = item.produto.productReference || null;
-        resultado.itemId = item.produto.itemId || item.produto.items?.[0]?.itemId || null;
-        return resultado;
-      }
-    } catch {}
-  }
-  return null;
-}
-
-async function buscarCarrefourDetalhado(produto) {
-  if (!produto || !produto.ean || !produto.nome) {
-    throw new Error('Carrefour: informe { ean, nome }.');
-  }
-  const produtoDale = { ean: String(produto.ean).trim(), nome: String(produto.nome).trim(), cep: produto.cep || null };
-  const { page } = await obterPaginaCarrefour();
-
-  // 1. Produto já mapeado: PDP direto, sem depender da busca.
-  const conhecido = PRODUTOS_CONHECIDOS.get(produtoDale.ean);
-  if (conhecido) {
-    try {
-      const direto = await consultarPdpDireto(page, produtoDale.ean, produtoDale.nome, conhecido);
-      if (direto) return direto;
-    } catch {}
-  }
-
-  // 2. Produto novo: busca candidatos e só aceita EAN exato no PDP.
-  const ranking = await buscarCandidatos(page, produtoDale);
-  const encontrado = await validarRanking(page, produtoDale, ranking);
-  if (encontrado) return encontrado;
-
-  return {
-    supermercado: 'carrefour',
-    encontrado: false,
-    disponivel: false,
-    ean: produtoDale.ean,
-    nome: produtoDale.nome,
-    preco: null,
-    precoExibido: null,
-    itemId: null,
-    productReference: null,
-    url: null,
-    seller: null,
-    estoque: null,
-    matchEan: false,
-  };
-}
-
 async function buscarProduto(termoBusca, eanBuscado, cep) {
-  const termo = String(termoBusca || '').trim();
-  const ean = String(eanBuscado || '').replace(/\D/g, '');
+  const contexto = await criarContextoRegional(cep);
+  if (!contexto) return null;
 
-  if (!termo || !ean) {
-    console.log('Carrefour: termo de busca ou EAN ausente.');
+  let produtos = [];
+
+  if (eanBuscado) {
+    produtos = await buscarPorEAN(contexto, eanBuscado);
+
+    const exatos = produtos.filter((produto) =>
+      produto.items?.some((item) => String(item.ean || "") === String(eanBuscado))
+    );
+
+    for (const produto of exatos) {
+      if (!validarCorrespondencia(termoBusca, produto)) continue;
+      const resultado = await montarProdutoRegional(contexto, produto, eanBuscado);
+      if (resultado) return resultado;
+    }
+  }
+
+  produtos = await buscarPorNome(contexto, termoBusca);
+  if (!produtos.length) return null;
+
+  if (eanBuscado) {
+    const exatos = produtos.filter((produto) =>
+      produto.items?.some((item) => String(item.ean || "") === String(eanBuscado))
+    );
+
+    for (const produto of exatos) {
+      if (!validarCorrespondencia(termoBusca, produto)) continue;
+      const resultado = await montarProdutoRegional(contexto, produto, eanBuscado);
+      if (resultado) return resultado;
+    }
+
+    console.log("Carrefour: nenhum cadastro com EAN exato gerou oferta regional válida.", {
+      termoBusca,
+      eanBuscado,
+      candidatos: produtos.length,
+      exatos: exatos.length
+    });
     return null;
   }
 
-  try {
-    const resultado = await buscarCarrefourDetalhado({
-      nome: termo,
-      ean,
-      cep: cep || null,
-    });
+  const melhor = escolherMelhorProduto(produtos, calcularPontuacao, termoBusca, null);
+  if (!melhor) return null;
 
-    if (!resultado || !resultado.encontrado || !resultado.matchEan) {
-      console.log('Carrefour: EAN exato não confirmado.', { termoBusca: termo, eanBuscado: ean });
-      return null;
-    }
-
-    if (!resultado.disponivel || typeof resultado.preco !== 'number' || resultado.preco <= 0) {
-      console.log('Carrefour: produto exato encontrado, porém indisponível para a região atual.', {
-        ean,
-        produto: resultado.nome,
-        precoExibido: resultado.precoExibido,
-      });
-      return null;
-    }
-
-    return criarProduto({
-      supermarketId: 'carrefour',
-      productName: resultado.nome,
-      ean: resultado.ean,
-      itemId: resultado.itemId,
-      sellerId: resultado.seller || 'Carrefour',
-      price: resultado.preco,
-      listPrice: resultado.precoExibido ?? resultado.preco,
-      available: true,
-      image: null,
-      url: resultado.url || null,
-    });
-  } catch (erro) {
-    console.log('Carrefour - erro na busca:', erro.message);
-    return null;
-  }
+  return montarProdutoRegional(contexto, melhor, null);
 }
 
-module.exports = {
-  buscarProduto,
-  buscarCarrefour: buscarCarrefourDetalhado,
-  PRODUTOS_CONHECIDOS,
-};
+module.exports = { buscarProduto };
