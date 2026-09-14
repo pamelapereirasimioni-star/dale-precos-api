@@ -22,6 +22,10 @@ const {
   buscarProduto: buscarBigCompra
 } = require("./supermercados/bigcompra");
 
+const {
+  buscarProduto: buscarCarrefour
+} = require("./supermercados/carrefour");
+
 const app = express();
 
 /*
@@ -61,6 +65,17 @@ const BIGCOMPRA_ENABLED = Boolean(
   process.env.SUPABASE_URL &&
   process.env.SUPABASE_SECRET_KEY
 );
+
+/*
+ * Carrefour depende, por enquanto, do Chrome local iniciado com CDP
+ * e previamente regionalizado. Por segurança, fica desativado por padrão
+ * no servidor hospedado. Ative apenas no teste local com
+ * CARREFOUR_ENABLED=true.
+ */
+const CARREFOUR_ENABLED =
+  String(
+    process.env.CARREFOUR_ENABLED || "false"
+  ).toLowerCase() === "true";
 
 const LOG_DETALHADO =
   String(
@@ -150,12 +165,19 @@ const cacheConsultas = new Map();
 
 function gerarChaveCache(
   termoBusca,
-  eanBuscado,
+  eansProduto,
   cep
 ) {
+  const eans =
+    eansProduto && typeof eansProduto === "object"
+      ? eansProduto
+      : { eanPrincipal: eansProduto };
+
   return [
     limparNomeBusca(termoBusca || ""),
-    String(eanBuscado || "").trim(),
+    String(eans.eanPrincipal || eans.ean || "").trim(),
+    String(eans.eanSavegnago || "").trim(),
+    String(eans.eanJauServe || "").trim(),
     String(cep || "").trim()
   ].join("|");
 }
@@ -275,6 +297,13 @@ function obterSupermercadosAtivos() {
     });
   }
 
+  if (CARREFOUR_ENABLED) {
+    supermercados.push({
+      id: "carrefour",
+      buscarProduto: buscarCarrefour
+    });
+  }
+
   return supermercados;
 }
 
@@ -299,14 +328,23 @@ function normalizarProdutoRecebido(
     produto.productName ||
     "";
 
-  const ean =
+  const eanPrincipal =
+    produto.eanPrincipal ||
     produto.ean ||
     produto.barcode ||
     produto.codigoBarras ||
     "";
 
+  const eanSavegnago =
+    produto.eanSavegnago ||
+    null;
+
+  const eanJauServe =
+    produto.eanJauServe ||
+    null;
+
   const termoBusca =
-    String(nome || ean)
+    String(nome || eanPrincipal)
       .replace(/\s+/g, " ")
       .trim();
 
@@ -339,8 +377,23 @@ function normalizarProdutoRecebido(
     termoBusca,
 
     ean:
-      ean
-        ? String(ean).trim()
+      eanPrincipal
+        ? String(eanPrincipal).trim()
+        : null,
+
+    eanPrincipal:
+      eanPrincipal
+        ? String(eanPrincipal).trim()
+        : null,
+
+    eanSavegnago:
+      eanSavegnago
+        ? String(eanSavegnago).trim()
+        : null,
+
+    eanJauServe:
+      eanJauServe
+        ? String(eanJauServe).trim()
         : null,
 
     quantidade:
@@ -359,15 +412,54 @@ function normalizarProdutoRecebido(
  * simultaneamente na instância de 512 MB.
  */
 
+function obterEanParaSupermercado(
+  supermercadoId,
+  eansProduto
+) {
+  const eans =
+    eansProduto && typeof eansProduto === "object"
+      ? eansProduto
+      : { eanPrincipal: eansProduto };
+
+  const eanPrincipal =
+    eans.eanPrincipal ||
+    eans.ean ||
+    null;
+
+  if (
+    supermercadoId === "savegnago" &&
+    eans.eanSavegnago
+  ) {
+    return String(eans.eanSavegnago).trim();
+  }
+
+  if (
+    supermercadoId === "jauserve" &&
+    eans.eanJauServe
+  ) {
+    return String(eans.eanJauServe).trim();
+  }
+
+  return eanPrincipal
+    ? String(eanPrincipal).trim()
+    : null;
+}
+
 async function buscarEmTodosMercados(
   termoBusca,
-  eanBuscado,
+  eansProduto,
   cep
 ) {
+  const eanPrincipal =
+    obterEanParaSupermercado(
+      "principal",
+      eansProduto
+    );
+
   const identificador =
     criarIdentificadorConsulta(
       termoBusca,
-      eanBuscado
+      eanPrincipal
     );
 
   const inicioConsulta = Date.now();
@@ -375,7 +467,7 @@ async function buscarEmTodosMercados(
   const chaveCache =
     gerarChaveCache(
       termoBusca,
-      eanBuscado,
+      eansProduto,
       cep
     );
 
@@ -402,10 +494,20 @@ async function buscarEmTodosMercados(
     const inicioSupermercado = Date.now();
 
     try {
+      const eanDoSupermercado =
+        obterEanParaSupermercado(
+          supermercado.id,
+          eansProduto
+        );
+
+      console.log(
+        `[${supermercado.id}] EAN usado: ${eanDoSupermercado || "não informado"}`
+      );
+
       const resultado =
         await supermercado.buscarProduto(
           termoBusca,
-          eanBuscado,
+          eanDoSupermercado,
           cep
         );
 
@@ -729,7 +831,9 @@ app.get(
           const produtos =
             await buscarEmTodosMercados(
               termoBusca,
-              ean,
+              {
+                eanPrincipal: ean || null
+              },
               cep
             );
 
@@ -912,7 +1016,15 @@ app.post(
                 const encontrados =
                   await buscarEmTodosMercados(
                     produto.termoBusca,
-                    produto.ean,
+                    {
+                      ean: produto.ean,
+                      eanPrincipal:
+                        produto.eanPrincipal,
+                      eanSavegnago:
+                        produto.eanSavegnago,
+                      eanJauServe:
+                        produto.eanJauServe
+                    },
                     cep
                   );
 
@@ -1130,6 +1242,11 @@ app.listen(
     console.log(
       "Big Compra ativo:",
       BIGCOMPRA_ENABLED
+    );
+
+    console.log(
+      "Carrefour ativo:",
+      CARREFOUR_ENABLED
     );
 
     registrarMemoria(

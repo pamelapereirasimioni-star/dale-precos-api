@@ -35,10 +35,20 @@ const SUGGESTIONS_URL =
 const CIDADE =
   process.env.JAUSERVE_CIDADE || "Ribeirão Preto";
 
+const GOOGLE_MAPS_API_KEY =
+  process.env.GOOGLE_MAPS_API_KEY || "";
+
+const BRASIL_API_BASE =
+  process.env.BRASIL_API_BASE ||
+  "https://brasilapi.com.br/api/cep/v2";
+
+const cacheCoordenadasCep = new Map();
+
 let browser = null;
 let contexto = null;
 let pagina = null;
 let sessaoPreparada = false;
+let cepSessaoPreparada = null;
 
 let filaPesquisas = Promise.resolve();
 
@@ -53,6 +63,7 @@ function executarExclusivo(tarefa) {
 
 async function fecharSessao() {
   sessaoPreparada = false;
+  cepSessaoPreparada = null;
 
   if (pagina) {
     await pagina.close().catch(() => {});
@@ -269,27 +280,250 @@ async function selecionarCidade() {
   return radiosLojas;
 }
 
-async function registrarPrimeiraLoja(radiosLojas) {
-  const primeiraLoja = radiosLojas.first();
+function normalizarCep(cep) {
+  const digitos = String(cep || "").replace(/\D/g, "");
+  return digitos.length === 8 ? digitos : "";
+}
 
-  const valor = await primeiraLoja.getAttribute("value");
-  const dataUrl = await primeiraLoja.getAttribute("data-url");
+async function obterEnderecoDoCep(cep) {
+  try {
+    const response = await fetch(
+      `${BRASIL_API_BASE}/${encodeURIComponent(cep)}`,
+      {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(15000)
+      }
+    );
+
+    if (!response.ok) return null;
+
+    const dados = await response.json();
+
+    return {
+      cep,
+      logradouro: String(dados?.street || "").trim(),
+      bairro: String(dados?.neighborhood || "").trim(),
+      cidade: String(dados?.city || "").trim(),
+      estado: String(dados?.state || "").trim()
+    };
+  } catch {
+    return null;
+  }
+}
+
+function montarEnderecoParaGoogle(endereco) {
+  return [
+    endereco?.logradouro,
+    endereco?.bairro,
+    endereco?.cidade,
+    endereco?.estado,
+    endereco?.cep,
+    "Brasil"
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+async function geocodificarEndereco(enderecoCompleto) {
+  if (!GOOGLE_MAPS_API_KEY) {
+    console.warn(
+      "Jaú Serve: GOOGLE_MAPS_API_KEY não configurada; usando a primeira loja como fallback."
+    );
+    return null;
+  }
+
+  try {
+    const url = new URL(
+      "https://maps.googleapis.com/maps/api/geocode/json"
+    );
+
+    url.searchParams.set("address", enderecoCompleto);
+    url.searchParams.set("region", "br");
+    url.searchParams.set("language", "pt-BR");
+    url.searchParams.set("key", GOOGLE_MAPS_API_KEY);
+
+    const response = await fetch(url, {
+      method: "GET",
+      signal: AbortSignal.timeout(15000)
+    });
+
+    if (!response.ok) return null;
+
+    const dados = await response.json();
+    const resultado = dados?.results?.[0];
+    const latitude = Number(resultado?.geometry?.location?.lat);
+    const longitude = Number(resultado?.geometry?.location?.lng);
+
+    if (
+      dados?.status !== "OK" ||
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude)
+    ) {
+      return null;
+    }
+
+    return {
+      latitude,
+      longitude,
+      enderecoFormatado:
+        resultado?.formatted_address || enderecoCompleto
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function obterCoordenadasCep(cep) {
+  const cepNormalizado = normalizarCep(cep);
+  if (!cepNormalizado) return null;
+
+  if (cacheCoordenadasCep.has(cepNormalizado)) {
+    return cacheCoordenadasCep.get(cepNormalizado);
+  }
+
+  const endereco = await obterEnderecoDoCep(cepNormalizado);
+  if (!endereco?.cidade || !endereco?.estado) return null;
+
+  const geocodificacao = await geocodificarEndereco(
+    montarEnderecoParaGoogle(endereco)
+  );
+
+  if (!geocodificacao) return null;
+
+  const valor = {
+    cep: cepNormalizado,
+    ...geocodificacao
+  };
+
+  cacheCoordenadasCep.set(cepNormalizado, valor);
+  return valor;
+}
+
+function calcularDistanciaKm(
+  latitudeA,
+  longitudeA,
+  latitudeB,
+  longitudeB
+) {
+  const raioTerraKm = 6371;
+  const paraRadianos = (graus) => (graus * Math.PI) / 180;
+
+  const deltaLatitude = paraRadianos(latitudeB - latitudeA);
+  const deltaLongitude = paraRadianos(longitudeB - longitudeA);
+  const latA = paraRadianos(latitudeA);
+  const latB = paraRadianos(latitudeB);
+
+  const a =
+    Math.sin(deltaLatitude / 2) ** 2 +
+    Math.cos(latA) *
+      Math.cos(latB) *
+      Math.sin(deltaLongitude / 2) ** 2;
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return raioTerraKm * c;
+}
+
+async function escolherLojaPorCep(radiosLojas, cepUsuario) {
+  const total = await radiosLojas.count();
+  const primeiraLoja = radiosLojas.first();
+  const cepNormalizado = normalizarCep(cepUsuario);
+
+  if (!cepNormalizado) {
+    console.warn(
+      "Jaú Serve: CEP do usuário não informado; usando a primeira loja como fallback."
+    );
+    return primeiraLoja;
+  }
+
+  const coordenadasUsuario =
+    await obterCoordenadasCep(cepNormalizado);
+
+  if (!coordenadasUsuario) {
+    console.warn(
+      "Jaú Serve: não foi possível geocodificar o CEP do usuário; usando a primeira loja como fallback.",
+      { cep: cepNormalizado }
+    );
+    return primeiraLoja;
+  }
+
+  const candidatas = [];
+
+  for (let indice = 0; indice < total; indice += 1) {
+    const radio = radiosLojas.nth(indice);
+    const cepLoja = normalizarCep(
+      await radio.getAttribute("value")
+    );
+
+    if (!cepLoja) continue;
+
+    const coordenadasLoja =
+      await obterCoordenadasCep(cepLoja);
+
+    if (!coordenadasLoja) continue;
+
+    const distanciaKm = calcularDistanciaKm(
+      coordenadasUsuario.latitude,
+      coordenadasUsuario.longitude,
+      coordenadasLoja.latitude,
+      coordenadasLoja.longitude
+    );
+
+    candidatas.push({
+      indice,
+      radio,
+      cepLoja,
+      distanciaKm
+    });
+  }
+
+  if (!candidatas.length) {
+    console.warn(
+      "Jaú Serve: não foi possível calcular a distância das lojas; usando a primeira loja como fallback."
+    );
+    return primeiraLoja;
+  }
+
+  candidatas.sort((a, b) => a.distanciaKm - b.distanciaKm);
+
+  console.log(
+    "Jaú Serve: lojas por proximidade:",
+    candidatas.map((loja) => ({
+      cepLoja: loja.cepLoja,
+      distanciaKm: Number(loja.distanciaKm.toFixed(3))
+    }))
+  );
+
+  return candidatas[0].radio;
+}
+
+async function registrarLojaPorCep(radiosLojas, cepUsuario) {
+  const lojaSelecionada = await escolherLojaPorCep(
+    radiosLojas,
+    cepUsuario
+  );
+
+  const valor = await lojaSelecionada.getAttribute("value");
+  const dataUrl = await lojaSelecionada.getAttribute("data-url");
 
   if (!valor) {
     throw new Error(
-      "O valor da primeira loja não foi encontrado"
+      "O valor da loja selecionada não foi encontrado"
     );
   }
 
   if (!dataUrl) {
     throw new Error(
-      "O endereço data-url da primeira loja não foi encontrado"
+      "O endereço data-url da loja selecionada não foi encontrado"
     );
   }
 
   console.log(
-    "Jaú Serve: registrando a primeira loja. Valor:",
-    valor
+    "Jaú Serve: loja selecionada para o CEP do usuário.",
+    {
+      cepUsuario: normalizarCep(cepUsuario) || null,
+      cepLoja: valor
+    }
   );
 
   const resultado = await pagina.evaluate(
@@ -429,7 +663,7 @@ async function registrarPrimeiraLoja(radiosLojas) {
   );
 }
 
-async function configurarLoja() {
+async function configurarLoja(cep) {
   if (sessaoPreparada) {
     return;
   }
@@ -439,13 +673,23 @@ async function configurarLoja() {
   const radiosLojas =
     await selecionarCidade();
 
-  await registrarPrimeiraLoja(
-    radiosLojas
+  await registrarLojaPorCep(
+    radiosLojas,
+    cep
   );
+
+  cepSessaoPreparada = normalizarCep(cep) || null;
 }
 
-function sessaoEstaValida() {
+function sessaoEstaValida(cep) {
+  const cepNormalizado = normalizarCep(cep);
+  const mesmaRegiao =
+    !cepNormalizado ||
+    !cepSessaoPreparada ||
+    cepSessaoPreparada === cepNormalizado;
+
   return Boolean(
+    mesmaRegiao &&
     sessaoPreparada &&
     browser &&
     browser.isConnected() &&
@@ -455,23 +699,35 @@ function sessaoEstaValida() {
   );
 }
 
-async function prepararSessao() {
-  if (sessaoEstaValida()) {
+async function prepararSessao(cep) {
+  if (sessaoEstaValida(cep)) {
     console.log(
-      "Jaú Serve: reutilizando sessão já preparada."
+      "Jaú Serve: reutilizando sessão já preparada.",
+      { cep: cepSessaoPreparada }
     );
     return;
+  }
+
+  if (sessaoPreparada) {
+    console.log(
+      "Jaú Serve: CEP mudou; recriando sessão regional.",
+      {
+        cepAnterior: cepSessaoPreparada,
+        cepNovo: normalizarCep(cep) || null
+      }
+    );
+    await fecharSessao();
   }
 
   await abrirHome();
 
   if (!sessaoPreparada) {
-    await configurarLoja();
+    await configurarLoja(cep);
   }
 }
 
-async function consultarSugestoes(termo) {
-  await prepararSessao();
+async function consultarSugestoes(termo, cep) {
+  await prepararSessao(cep);
 
   const resultado = await pagina.evaluate(
     async ({ endpoint, termoBusca }) => {
@@ -761,10 +1017,10 @@ function removerDuplicados(produtos) {
   );
 }
 
-async function pesquisarNoSite(termo) {
+async function pesquisarNoSite(termo, cep) {
   try {
     const html =
-      await consultarSugestoes(termo);
+      await consultarSugestoes(termo, cep);
 
     const produtos =
       extrairProdutos(html);
@@ -809,7 +1065,8 @@ async function pesquisarNoSite(termo) {
 
 async function buscarProdutoInterno(
   termoBusca,
-  eanBuscado
+  eanBuscado,
+  cep
 ) {
   const atributosBusca =
     detectarAtributos(termoBusca);
@@ -842,7 +1099,7 @@ async function buscarProdutoInterno(
     termosExecutados.push(termo);
 
     const encontrados =
-      await pesquisarNoSite(termo);
+      await pesquisarNoSite(termo, cep);
 
     if (encontrados.length === 0) {
       continue;
@@ -1125,13 +1382,15 @@ async function buscarProdutoInterno(
 
 async function buscarProduto(
   termoBusca,
-  eanBuscado
+  eanBuscado,
+  cep
 ) {
   return executarExclusivo(
     () =>
       buscarProdutoInterno(
         termoBusca,
-        eanBuscado
+        eanBuscado,
+        cep
       )
   );
 }
