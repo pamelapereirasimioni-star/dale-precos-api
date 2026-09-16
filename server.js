@@ -643,21 +643,25 @@ function formatarResultadoBatch(
       null,
 
     comboQuantity:
+      resultado.comboQuantity != null &&
       Number.isFinite(Number(resultado.comboQuantity))
         ? Number(resultado.comboQuantity)
         : null,
 
     comboPrice:
+      resultado.comboPrice != null &&
       Number.isFinite(Number(resultado.comboPrice))
         ? Number(resultado.comboPrice)
         : null,
 
     unitEquivalentPrice:
+      resultado.unitEquivalentPrice != null &&
       Number.isFinite(Number(resultado.unitEquivalentPrice))
         ? Number(resultado.unitEquivalentPrice)
         : null,
 
     limitQuantity:
+      resultado.limitQuantity != null &&
       Number.isFinite(Number(resultado.limitQuantity))
         ? Number(resultado.limitQuantity)
         : null,
